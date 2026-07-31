@@ -82,9 +82,13 @@ K2's corpus, bpf_conformance as executable spec)
    the last 2 are bpf2bpf local calls (now detected from raw src_reg
    and rejected honestly), not helpers — 312/312 needs bpf2bpf, queued
    below.
-2. **`barrier_var` passthrough** — empty template with tied `"+r"`
-   operands is an identity function; largest recoverable slice of the
-   inline-asm bucket.
+2. ~~**`barrier_var` passthrough**~~ ✅ (2026-07-31): identity-asm
+   replacement in the semantic copy (DECISIONS.md). Honest result:
+   small — 4 functions recovered of the 1721 inline-asm bucket, which
+   is 1653 `__naked` (out of scope by nature) + 64 non-identity asm.
+   The inline-asm cap is now precisely quantified; the passthrough
+   mostly prevents barrier_var from re-blocking functions once maps
+   land (51 sites across 26 files).
 3. **Maps design** (checkpoint-worthy discussion first) — `.maps`
    globals are 14% of selftest functions **+ 148 helper-bucket
    functions now blocked only on this**; K2-style distinguished

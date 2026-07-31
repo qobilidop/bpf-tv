@@ -178,6 +178,94 @@ void stripEmptyInlineAsm(
 }
 
 /*
+ * barrier_var passthrough: asm volatile("" : "+r"(x)) -- an empty
+ * template whose register outputs are each tied to an input -- emits
+ * no instructions, so at runtime every output equals its tied input:
+ * an identity function that only constrains the optimizer. replace
+ * the results with the tied inputs in the SEMANTIC copy; codegen runs
+ * on the unstripped clone and still sees the register constraints.
+ * void empty-template asm is handled by stripEmptyInlineAsm above.
+ */
+void replaceIdentityInlineAsm(
+    llvm::Function *fn,
+    std::unordered_map<unsigned, llvm::Instruction *> &lineMap) {
+  llvm::SmallVector<llvm::CallInst *, 8> dead;
+  for (auto &bb : *fn) {
+    for (auto &i : bb) {
+      auto *ci = dyn_cast<llvm::CallInst>(&i);
+      if (!ci)
+        continue;
+      auto *ia = dyn_cast<llvm::InlineAsm>(ci->getCalledOperand());
+      if (!ia || !ia->getAsmString().empty() || ci->getType()->isVoidTy())
+        continue;
+
+      // map constraint entries to call arguments (inputs consume an
+      // argument slot each, in order) and require every output to be
+      // a direct register tied to an input; clobbers are irrelevant
+      // for a no-instruction template
+      auto cinfos = ia->ParseConstraints();
+      std::vector<int> argOf(cinfos.size(), -1);
+      llvm::SmallVector<llvm::Value *, 4> outVal;
+      unsigned arg = 0;
+      bool ok = true;
+      for (auto &c : cinfos) {
+        if (c.Type == llvm::InlineAsm::isOutput && c.isIndirect)
+          ok = false;
+        if (c.Type == llvm::InlineAsm::isInput)
+          argOf[&c - &cinfos[0]] = arg++;
+      }
+      if (!ok)
+        continue;
+      for (auto &c : cinfos) {
+        if (c.Type != llvm::InlineAsm::isOutput)
+          continue;
+        int m = c.MatchingInput;
+        if (m < 0 || argOf[m] < 0) {
+          ok = false;
+          break;
+        }
+        outVal.push_back(ci->getArgOperand(argOf[m]));
+      }
+      if (!ok || outVal.empty())
+        continue;
+
+      if (!ci->getType()->isStructTy()) {
+        if (outVal.size() != 1 || outVal[0]->getType() != ci->getType())
+          continue;
+        ci->replaceAllUsesWith(outVal[0]);
+        dead.push_back(ci);
+        continue;
+      }
+
+      // aggregate return: users must all be single-index extractvalue
+      llvm::SmallVector<llvm::ExtractValueInst *, 4> evs;
+      for (auto *u : ci->users()) {
+        auto *ev = dyn_cast<llvm::ExtractValueInst>(u);
+        if (!ev || ev->getNumIndices() != 1 ||
+            ev->getIndices()[0] >= outVal.size() ||
+            ev->getType() != outVal[ev->getIndices()[0]]->getType()) {
+          ok = false;
+          break;
+        }
+        evs.push_back(ev);
+      }
+      if (!ok)
+        continue;
+      for (auto *ev : evs) {
+        ev->replaceAllUsesWith(outVal[ev->getIndices()[0]]);
+        std::erase_if(lineMap, [&](auto &kv) { return kv.second == ev; });
+        ev->eraseFromParent();
+      }
+      dead.push_back(ci);
+    }
+  }
+  for (auto *ci : dead) {
+    std::erase_if(lineMap, [&](auto &kv) { return kv.second == ci; });
+    ci->eraseFromParent();
+  }
+}
+
+/*
  * helper calls by number: selftest-style BPF code calls kernel
  * helpers through an integer-constant function pointer --
  * `call i64 inttoptr (i64 N to ptr)(...)` -- and the backend emits
@@ -282,6 +370,7 @@ void doit(llvm::Module *srcModule, llvm::Function *srcFn, Verifier &verifier,
     // copy that the refinement check consumes
     auto CodegenM = llvm::CloneModule(*srcModule);
     stripEmptyInlineAsm(srcFn, lineMap);
+    replaceIdentityInlineAsm(srcFn, lineMap);
     rewriteHelperCallsByNumber(srcFn);
 
     // pre-flight the stripped source through Alive2 BEFORE running the
@@ -309,6 +398,7 @@ void doit(llvm::Module *srcModule, llvm::Function *srcFn, Verifier &verifier,
     // hand-mutated) still map calls back to their source instructions
     lifter::addDebugInfo(srcFn, lineMap);
     stripEmptyInlineAsm(srcFn, lineMap);
+    replaceIdentityInlineAsm(srcFn, lineMap);
     rewriteHelperCallsByNumber(srcFn);
     AsmBuffer = ExitOnErr(
         llvm::errorOrToExpected(llvm::MemoryBuffer::getFile(opt_asm_input)));

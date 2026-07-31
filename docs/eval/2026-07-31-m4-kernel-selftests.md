@@ -26,12 +26,16 @@ clean-Linux-headers cross-check).
 
 1. **Inline asm is the #1 coverage cap on real-world code — now
    quantified at 40.2%** of selftest functions (the evaluation doc
-   flagged exactly this risk as "measure early"). Composition: a large
-   share is the `verifier_*` test idiom — entire programs as `__naked`
-   asm blobs, which are *asm inputs*, not compiler output, and thus
-   legitimately out of scope for backend TV; the meaningful remainder
-   is `barrier_var`-style empty-template-with-outputs asm (queued
-   v0.5 feature) and `.8byte`/`may_goto` idioms.
+   flagged exactly this risk as "measure early"). Composition,
+   measured exactly after the barrier_var passthrough landed
+   (2026-07-31): of the 1721 bucketed functions, **1653 are `__naked`**
+   — entire programs as asm blobs, which are *asm inputs*, not
+   compiler output, and thus legitimately out of scope for backend TV
+   — **64 carry genuinely non-identity asm** (bpf_throw guards,
+   `.8byte`, `may_goto`), and 4 recovered (1 verified, 2 maps-blocked,
+   1 varargs). `barrier_var` itself is only 51 call sites in 26 files;
+   the passthrough's main value is that those sites no longer block
+   functions whose other blockers (maps, volatile) fall later.
 2. **Maps are the #2 cap (14%)** — `LD_imm64` of `.maps`-section
    globals fails lifter global lookup. The K2-style map modeling from
    the design doc is the fix; until then this bucket is the honest

@@ -415,3 +415,32 @@ src field that distinguishes them.
 **Revisit when:** bpf2bpf local calls land, or a helper-signature
 table becomes worth carrying (e.g. to model `bpf_tail_call`'s
 noreturn-ish behavior or writable args precisely).
+
+## 2026-07-31 — barrier_var passthrough (identity inline asm)
+
+**Context:** the 2026-07-30 empty-template-asm entry's revisit hook:
+`asm volatile("" : "+r"(x))` (`barrier_var`) is an empty template
+whose register outputs are tied to inputs — no instructions execute,
+every output equals its tied input; it exists only to constrain the
+optimizer.
+
+**Decision:** `replaceIdentityInlineAsm` in the driver: for
+empty-template, non-void asm calls where every output is a direct
+register with a tied input, replace results with the tied inputs in
+the semantic copy (aggregate returns via their extractvalues; bail on
+indirect outputs or any other use shape). Codegen still sees the asm
+and its regalloc constraints. Clobbers are ignored — with no
+instructions they, like the constraint itself, only affect the
+optimizer, which has already run.
+
+**Measured effect (honest):** small. The kernel-selftest corpus has
+51 such call sites across 26 files; re-running the 1721 inline-asm-
+bucket functions recovers 4 (1 verified, 2 now maps-blocked, 1
+varargs). The bucket is 1653 `__naked` functions (asm *inputs*, out
+of scope for backend TV by nature) + 64 with genuinely non-identity
+asm (bpf_throw guards, `.8byte`, may_goto). The passthrough's real
+value is unblocking barrier_var-containing functions whose *other*
+blockers (maps, volatile) will fall later.
+
+**Revisit when:** modeling may_goto (nondeterministic branch) or the
+verifier-directive asm idioms, if ever worth it.
