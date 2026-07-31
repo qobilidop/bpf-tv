@@ -102,6 +102,15 @@ public:
            std::unordered_map<unsigned, llvm::Instruction *> &lineMap,
            std::ostream *out, const llvm::Target *Targ, llvm::Triple DefaultTT,
            const char *DefaultCPU, const char *DefaultFeatures);
+
+  /*
+   * bytes-mode entry: disassemble raw BPF bytecode (e.g. from the
+   * bpf_conformance harness), reconstruct the CFG, and lift -- no
+   * textual assembly involved. Returns the same (src, lifted) pair as
+   * run().
+   */
+  std::pair<llvm::Function *, llvm::Function *>
+  runBytes(llvm::ArrayRef<uint8_t> bytes);
 };
 
 } // end namespace lifter

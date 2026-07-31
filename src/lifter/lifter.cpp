@@ -18,11 +18,6 @@ using namespace std;
 using namespace llvm;
 using namespace lifter;
 
-// do not delete this line, it's not as dead as it looks: it registers
-// the command-line flags that InitMCTargetOptionsFromFlags() reads in
-// the mc2llvm constructor
-mc::RegisterMCTargetOptionsFlags MOF;
-
 namespace lifter {
 
 void addDebugInfo(Function *srcFn,

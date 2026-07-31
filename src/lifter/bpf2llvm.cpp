@@ -7,10 +7,13 @@
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/MC/MCDisassembler/MCDisassembler.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/BinaryFormat/ELF.h"
 
 #include <cstdint>
+#include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -414,6 +417,166 @@ void bpf2llvm::checkCallingConv(Function *fn) {
   }
 }
 
+pair<Function *, Function *> bpf2llvm::runBytes(ArrayRef<uint8_t> bytes) {
+  setupLift();
+
+  unique_ptr<MCDisassembler> DisAsm(
+      Targ->createMCDisassembler(*STI.get(), *MCCtx.get()));
+  assert(DisAsm && "no BPF disassembler available");
+
+  // decode; BPF instructions are 8 bytes, ld_imm64 is 16. we index
+  // instructions in 8-byte units because branch offsets count units.
+  struct DecodedInsn {
+    MCInst inst;
+    uint64_t unit;  // instruction start, in 8-byte units
+    unsigned units; // 1 or 2
+  };
+  vector<DecodedInsn> insns;
+  std::map<uint64_t, size_t> unitToInsn;
+  for (uint64_t off = 0; off < bytes.size();) {
+    MCInst inst;
+    uint64_t size = 0;
+    auto status = DisAsm->getInstruction(inst, size, bytes.slice(off), off,
+                                         nulls());
+    if (status != MCDisassembler::Success || size == 0) {
+      *out << "\nERROR: cannot disassemble instruction at offset " << off
+           << "\n";
+      exit(-1);
+    }
+    unitToInsn[off / 8] = insns.size();
+    insns.push_back({inst, off / 8, unsigned(size / 8)});
+    off += size;
+  }
+  if (insns.empty()) {
+    *out << "\nERROR: empty program\n";
+    exit(-1);
+  }
+
+  // the tablegen decoder zero-extends immediate fields from their
+  // encoded width; sign-extend them to match what the asm parser
+  // produces (16-bit branch/memory offsets, 32-bit ALU immediates;
+  // LD_imm64 carries a true 64-bit immediate and is left alone)
+  auto sext = [](MCInst &inst, unsigned idx, unsigned bits) {
+    auto &op = inst.getOperand(idx);
+    if (!op.isImm())
+      return;
+    int64_t v = op.getImm();
+    op.setImm(bits == 16 ? int64_t(int16_t(v)) : int64_t(int32_t(v)));
+  };
+  for (auto &di : insns) {
+    auto &inst = di.inst;
+    auto op = inst.getOpcode();
+    auto &desc = MCII->get(op);
+    unsigned n = inst.getNumOperands();
+    if (op == BPF::LD_imm64 || op == BPF::NOP || n == 0)
+      continue;
+    if (desc.isBranch()) {
+      // conditional branches may also carry a 32-bit rhs immediate
+      if (n == 3)
+        sext(inst, 1, 32);
+      sext(inst, n - 1, op == BPF::JMPL ? 32 : 16);
+      continue;
+    }
+    if (desc.isCall()) {
+      sext(inst, n - 1, 32);
+      continue;
+    }
+    switch (op) {
+    case BPF::LDD: case BPF::LDW: case BPF::LDH: case BPF::LDB:
+    case BPF::LDWSX: case BPF::LDHSX: case BPF::LDBSX:
+    case BPF::LDW32: case BPF::LDH32: case BPF::LDB32:
+    case BPF::STD: case BPF::STW: case BPF::STH: case BPF::STB:
+    case BPF::STW32: case BPF::STH32: case BPF::STB32:
+      sext(inst, 2, 16); // (reg, base, off)
+      break;
+    case BPF::STD_imm: case BPF::STW_imm:
+    case BPF::STH_imm: case BPF::STB_imm:
+      sext(inst, 0, 32); // (imm, base, off)
+      sext(inst, 2, 16);
+      break;
+    case BPF::CMPXCHGD: case BPF::CMPXCHGW32:
+      sext(inst, 1, 16); // (base, off, new)
+      break;
+    case BPF::XADDW: case BPF::XADDW32: case BPF::XADDD:
+    case BPF::XANDW32: case BPF::XANDD:
+    case BPF::XORW32: case BPF::XORD:
+    case BPF::XXORW32: case BPF::XXORD:
+    case BPF::XFADDW32: case BPF::XFADDD:
+    case BPF::XFANDW32: case BPF::XFANDD:
+    case BPF::XFORW32: case BPF::XFORD:
+    case BPF::XFXORW32: case BPF::XFXORD:
+    case BPF::XCHGW32: case BPF::XCHGD:
+      sext(inst, 2, 16); // (dst, base, off, val)
+      break;
+    default:
+      // ALU ri forms and moves keep their immediate last
+      sext(inst, n - 1, 32);
+      break;
+    }
+  }
+
+  // find block leaders: entry, branch targets, fallthroughs after
+  // terminators. branch target = start unit + units + off, where the
+  // offset is the branch instruction's last operand.
+  auto branchTargetUnit = [&](const DecodedInsn &di) -> int64_t {
+    auto &op = di.inst.getOperand(di.inst.getNumOperands() - 1);
+    assert(op.isImm());
+    // signed: backward branches have negative offsets
+    return int64_t(di.unit) + di.units + op.getImm();
+  };
+  std::set<uint64_t> leaders{insns.front().unit};
+  for (auto &di : insns) {
+    auto &desc = MCII->get(di.inst.getOpcode());
+    if (desc.isBranch()) {
+      int64_t t = branchTargetUnit(di);
+      if (t >= 0)
+        leaders.insert(uint64_t(t));
+      leaders.insert(di.unit + di.units); // fallthrough
+    } else if (desc.isReturn()) {
+      leaders.insert(di.unit + di.units);
+    }
+  }
+
+  auto labelName = [](uint64_t unit) {
+    return "L" + std::to_string(unit);
+  };
+
+  // rewrite branch target operands from numeric offsets to symbol
+  // refs so the text-path machinery (generateSuccessors, getBB)
+  // works unchanged
+  for (auto &di : insns) {
+    if (!MCII->get(di.inst.getOpcode()).isBranch())
+      continue;
+    int64_t tgt = branchTargetUnit(di);
+    if (tgt < 0 || !unitToInsn.count(uint64_t(tgt))) {
+      *out << "\nERROR: branch to unit " << tgt
+           << " which is not an instruction boundary\n";
+      exit(-1);
+    }
+    auto *sym = MCCtx->getOrCreateSymbol(labelName(tgt));
+    di.inst.getOperand(di.inst.getNumOperands() - 1) =
+        MCOperand::createExpr(MCSymbolRefExpr::create(sym, *MCCtx.get()));
+  }
+
+  // populate the MCFunction
+  Str->MF.setName(srcFn->getName().str());
+  MCBasicBlock *cur = nullptr;
+  for (auto &di : insns) {
+    if (leaders.count(di.unit) || !cur) {
+      cur = Str->MF.addBlock(labelName(di.unit));
+      // keep blocks reachable only by fallthrough from being empty
+      // is not needed here: every block gets at least this insn
+    }
+    cur->addInst(di.inst);
+  }
+
+  Str->removeEmptyBlocks();
+  Str->checkEntryBlock(branchInst());
+  Str->generateSuccessors();
+
+  return liftMCFunction();
+}
+
 void bpf2llvm::lift(MCInst &I) {
   auto opcode = I.getOpcode();
 
@@ -484,11 +647,16 @@ void bpf2llvm::lift(MCInst &I) {
       v = createTrunc(v, getIntTy(bits));
     createStore(v, ptr);
   };
-  // store-immediate: operands (imm, base, offset)
+  // store-immediate: operands (imm, base, offset); the low `bits` of
+  // the immediate are stored, so truncate rather than sign-check
   auto storeImm = [&](unsigned bits) {
     auto ptr = getMemPointerOperand(1);
-    auto v = readImmOperand(0, bits);
-    createStore(v, ptr);
+    auto &op = CurInst->getOperand(0);
+    assert(op.isImm());
+    uint64_t masked = uint64_t(op.getImm());
+    if (bits < 64)
+      masked &= (uint64_t(1) << bits) - 1;
+    createStore(getUnsignedIntConst(masked, bits), ptr);
   };
 
   switch (opcode) {
@@ -709,7 +877,14 @@ void bpf2llvm::lift(MCInst &I) {
 
   // ---- endian conversions (target is little-endian) ----
   case BPF::BE16:
+  case BPF::BSWAP16:
     endian(16, /*swap=*/true);
+    break;
+  case BPF::BSWAP32:
+    endian(32, /*swap=*/true);
+    break;
+  case BPF::BSWAP64:
+    endian(64, /*swap=*/true);
     break;
   case BPF::BE32:
     endian(32, /*swap=*/true);
@@ -793,7 +968,8 @@ void bpf2llvm::lift(MCInst &I) {
     break;
 
   // ---- control flow ----
-  case BPF::JMP: {
+  case BPF::JMP:
+  case BPF::JMPL: {
     auto &op = CurInst->getOperand(0);
     if (op.isExpr()) {
       auto *bb = getBB(CurInst->getOperand(0));
@@ -895,6 +1071,125 @@ void bpf2llvm::lift(MCInst &I) {
                            getUnsignedIntConst(0, 64));
     auto [t, f] = getBranchTargetsOperand(2);
     createBranch(cond, t, f);
+    break;
+  }
+  case BPF::JSET_rr_32:
+  case BPF::JSET_ri_32: {
+    auto a = readRegOperand32(0);
+    auto b = readALUSrcOperand(1, 32);
+    auto cond = createICmp(ICmpInst::ICMP_NE, createAnd(a, b),
+                           getUnsignedIntConst(0, 32));
+    auto [t, f] = getBranchTargetsOperand(2);
+    createBranch(cond, t, f);
+    break;
+  }
+
+  // ---- atomics ----
+  // no-fetch: operands (dst, base, off, val), dst tied to val;
+  // registers are unchanged, only memory is updated
+  case BPF::XADDW:
+  case BPF::XADDW32:
+  case BPF::XADDD:
+  case BPF::XANDW32:
+  case BPF::XANDD:
+  case BPF::XORW32:
+  case BPF::XORD:
+  case BPF::XXORW32:
+  case BPF::XXORD:
+  // fetch: same operand layout; dst receives the old memory value
+  case BPF::XFADDW32:
+  case BPF::XFADDD:
+  case BPF::XFANDW32:
+  case BPF::XFANDD:
+  case BPF::XFORW32:
+  case BPF::XFORD:
+  case BPF::XFXORW32:
+  case BPF::XFXORD:
+  case BPF::XCHGW32:
+  case BPF::XCHGD: {
+    AtomicRMWInst::BinOp op;
+    switch (opcode) {
+    case BPF::XADDW:
+    case BPF::XADDW32:
+    case BPF::XADDD:
+    case BPF::XFADDW32:
+    case BPF::XFADDD:
+      op = AtomicRMWInst::Add;
+      break;
+    case BPF::XANDW32:
+    case BPF::XANDD:
+    case BPF::XFANDW32:
+    case BPF::XFANDD:
+      op = AtomicRMWInst::And;
+      break;
+    case BPF::XORW32:
+    case BPF::XORD:
+    case BPF::XFORW32:
+    case BPF::XFORD:
+      op = AtomicRMWInst::Or;
+      break;
+    case BPF::XXORW32:
+    case BPF::XXORD:
+    case BPF::XFXORW32:
+    case BPF::XFXORD:
+      op = AtomicRMWInst::Xor;
+      break;
+    default:
+      op = AtomicRMWInst::Xchg;
+      break;
+    }
+    bool is64 = opcode == BPF::XADDD || opcode == BPF::XANDD ||
+                opcode == BPF::XORD || opcode == BPF::XXORD ||
+                opcode == BPF::XFADDD || opcode == BPF::XFANDD ||
+                opcode == BPF::XFORD || opcode == BPF::XFXORD ||
+                opcode == BPF::XCHGD;
+    bool fetch = opcode == BPF::XFADDW32 || opcode == BPF::XFADDD ||
+                 opcode == BPF::XFANDW32 || opcode == BPF::XFANDD ||
+                 opcode == BPF::XFORW32 || opcode == BPF::XFORD ||
+                 opcode == BPF::XFXORW32 || opcode == BPF::XFXORD ||
+                 opcode == BPF::XCHGW32 || opcode == BPF::XCHGD;
+    auto ptr = getMemPointerOperand(1);
+    Value *val;
+    if (is64)
+      val = readRegOperand64(3);
+    else if (opcode == BPF::XADDW) // legacy: GPR operand, 32-bit memory op
+      val = createTrunc(readRegOperand64(3), getIntTy(32));
+    else
+      val = readRegOperand32(3);
+    auto *rmw = new AtomicRMWInst(op, ptr, val, Align(is64 ? 8 : 4),
+                                  AtomicOrdering::SequentiallyConsistent,
+                                  SyncScope::System, /*Elementwise=*/false,
+                                  LLVMBB);
+    if (fetch) {
+      if (is64)
+        updateReg64(rmw, CurInst->getOperand(0).getReg());
+      else
+        updateReg32(rmw, CurInst->getOperand(0).getReg());
+    }
+    break;
+  }
+
+  // compare-exchange: operands (base, off, new); r0/w0 implicit
+  case BPF::CMPXCHGD: {
+    auto ptr = getMemPointerOperand(0);
+    auto expected = readReg64(BPF::R0);
+    auto newVal = readRegOperand64(2);
+    auto *cx = new AtomicCmpXchgInst(
+        ptr, expected, newVal, Align(8),
+        AtomicOrdering::SequentiallyConsistent,
+        AtomicOrdering::SequentiallyConsistent, SyncScope::System, LLVMBB);
+    updateReg64(createExtractValue(cx, {0}), BPF::R0);
+    break;
+  }
+  case BPF::CMPXCHGW32: {
+    auto ptr = getMemPointerOperand(0);
+    auto expected = readReg32(BPF::R0);
+    auto newVal = readRegOperand32(2);
+    auto *cx = new AtomicCmpXchgInst(
+        ptr, expected, newVal, Align(4),
+        AtomicOrdering::SequentiallyConsistent,
+        AtomicOrdering::SequentiallyConsistent, SyncScope::System, LLVMBB);
+    updateReg32(createExtractValue(cx, {0}), BPF::R0);
     break;
   }
 

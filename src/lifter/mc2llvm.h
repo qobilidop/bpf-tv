@@ -992,6 +992,11 @@ public:
   void invalidateReg(unsigned Reg, unsigned Width);
   void createRegStorage(unsigned Reg, unsigned Width, const std::string &Name);
   std::pair<llvm::Function *, llvm::Function *> run();
+  // pieces of run(), reusable by bytes-mode entry points: setupLift()
+  // prepares MC machinery and Str; liftMCFunction() lifts whatever
+  // MCFunction Str->MF holds
+  void setupLift();
+  std::pair<llvm::Function *, llvm::Function *> liftMCFunction();
   void avoidArgMD(llvm::CallInst *ci, const std::string &str);
   void checkInstSupport(llvm::Instruction &i, const llvm::DataLayout &DL,
                         std::set<llvm::Type *> &typeSet);

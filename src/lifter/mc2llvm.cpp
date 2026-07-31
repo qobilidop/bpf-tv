@@ -5,6 +5,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCSymbol.h"
+#include "llvm/Support/raw_os_ostream.h"
 
 #include "lifter/lifter.h"
 #include "lifter/mc2llvm.h"
@@ -14,6 +15,13 @@
 using namespace std;
 using namespace llvm;
 using namespace lifter;
+
+// do not delete this line, it's not as dead as it looks: it registers
+// the command-line flags that InitMCTargetOptionsFromFlags() reads in
+// the mc2llvm constructor. it lives here (not lifter.cpp) so that
+// every binary linking the lifter -- including ones that never call
+// liftFunc, like the conformance plugin -- gets it
+mc::RegisterMCTargetOptionsFlags MOF;
 
 ////////////////////
 
@@ -609,8 +617,10 @@ void mc2llvm::liftInst(MCInst &I) {
   I.dump_pretty(ss, InstPrinter);
   *out << sss << " = " << std::flush;
   if (I.getOpcode() != sentinelNOP()) {
-    InstPrinter->printInst(&I, 100, "", *STI.get(), outs());
-    outs().flush();
+    // print via *out, not outs(): binaries like the conformance
+    // plugin must keep stdout clean for their protocol
+    llvm::raw_os_ostream ros(*out);
+    InstPrinter->printInst(&I, 100, "", *STI.get(), ros);
   }
   *out << std::endl;
 
@@ -630,15 +640,15 @@ void mc2llvm::createRegStorage(unsigned Reg, unsigned Width,
   RegFile[Reg] = A;
 }
 
-pair<Function *, Function *> mc2llvm::run() {
-  // liftedModule->setDataLayout(srcModule->getDataLayout());
-  // liftedModule->setTargetTriple(srcModule->getTargetTriple());
-
+// shared MC setup for both the textual-asm path (run()) and
+// bytes-mode entry points
+void mc2llvm::setupLift() {
   checkSupport(srcFn);
   nameGlobals(srcFn->getParent());
   srcFn = adjustSrc(srcFn);
 
-  SrcMgr.AddNewSourceBuffer(std::move(MB), llvm::SMLoc());
+  if (MB)
+    SrcMgr.AddNewSourceBuffer(std::move(MB), llvm::SMLoc());
 
   InstPrinter =
       Targ->createMCInstPrinter(DefaultTT, 0, *MAI.get(), *MCII.get(), *MRI);
@@ -652,6 +662,10 @@ pair<Function *, Function *> mc2llvm::run() {
   Str = make_unique<MCStreamerWrapper>(*MCCtx.get(), *IA.get(), *InstPrinter,
                                        *MRI, sentinelNOP(), lineMap, out);
   Str->setUseAssemblerInfoForParsing(true);
+}
+
+pair<Function *, Function *> mc2llvm::run() {
+  setupLift();
 
   raw_ostream &OSRef = nulls();
   formatted_raw_ostream FOSRef(OSRef);
@@ -675,6 +689,13 @@ pair<Function *, Function *> mc2llvm::run() {
   Str->checkEntryBlock(branchInst());
   Str->generateSuccessors();
 
+  return liftMCFunction();
+}
+
+// lift the MCFunction in Str->MF (populated either by the asm parser
+// via run(), or directly by a bytes-mode entry point such as
+// bpf2llvm::runBytes) into LLVM IR
+pair<Function *, Function *> mc2llvm::liftMCFunction() {
   // we'll want this later
   vector<Type *> args{getIntTy(1)};
   FunctionType *assertTy = FunctionType::get(Type::getVoidTy(Ctx), args, false);
