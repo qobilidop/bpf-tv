@@ -16,6 +16,7 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Function.h"
@@ -32,6 +33,7 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/Transforms/Utils/Local.h"
 
 #include <bit>
 #include <functional>
@@ -589,6 +591,38 @@ bool rewriteStackObjects(llvm::Function *F2,
       p.inst->replaceAllUsesWith(ni);
     }
     p.inst->eraseFromParent();
+  }
+
+  /*
+   * -O3 stamped access alignments it proved against the 16-aligned
+   * single frame (base + C); an object whose frame offset is not
+   * 16-divisible cannot justify them (the machine address is
+   * congruent to C mod 16, which an alloca's align cannot express),
+   * so the split model would see spurious UB in the target. the BPF
+   * ISA imposes no access alignment at all -- clamp every claim on a
+   * split-object access to what the model can actually prove.
+   */
+  for (auto &bb : *F2) {
+    for (auto &i : bb) {
+      llvm::Value *ptr = nullptr;
+      if (auto *li = dyn_cast<llvm::LoadInst>(&i))
+        ptr = li->getPointerOperand();
+      else if (auto *si = dyn_cast<llvm::StoreInst>(&i))
+        ptr = si->getPointerOperand();
+      else
+        continue;
+      auto *ai = dyn_cast<llvm::AllocaInst>(llvm::getUnderlyingObject(ptr));
+      if (!ai || !ai->getName().starts_with("bpftv_stkobj"))
+        continue;
+      auto known = llvm::getKnownAlignment(ptr, DL, &i);
+      if (auto *li = dyn_cast<llvm::LoadInst>(&i)) {
+        if (li->getAlign() > known)
+          li->setAlignment(known);
+      } else if (auto *si = dyn_cast<llvm::StoreInst>(&i)) {
+        if (si->getAlign() > known)
+          si->setAlignment(known);
+      }
+    }
   }
 
   *log << "per-object stack rewrite: split " << objs.size() << " of "

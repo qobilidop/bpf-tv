@@ -566,7 +566,12 @@ void bpf2llvm::checkTypeSupport(Type *ty) {
 }
 
 void bpf2llvm::checkCallingConv(Function *fn) {
-  if (fn->getCallingConv() != CallingConv::C) {
+  // the BPF backend lowers fastcc identically to C (BPFISelLowering
+  // LowerFormalArguments/LowerCall: both cases fall through to
+  // CC_BPF64/CC_BPF32), and -O2 promotes internal functions to
+  // fastcc, so real-world corpora are full of it
+  auto cc = fn->getCallingConv();
+  if (cc != CallingConv::C && cc != CallingConv::Fast) {
     *out << "\nERROR: Only the C calling convention is supported\n\n";
     exit(-1);
   }
