@@ -7,7 +7,7 @@
 |---|---|---|
 | verified | 204 | 47.6% |
 | unsupported:src-ir | 110 | 25.6% |
-| other | 29 | 6.8% |
+| other | 30 | 7.0% |
 | failed-to-prove | 18 | 4.2% |
 | unsupported:insn | 10 | 2.3% |
 | unsupported:inline-asm | 10 | 2.3% |
@@ -19,7 +19,6 @@
 | unsupported:global-lookup | 3 | 0.7% |
 | unsupported:wide-int | 2 | 0.5% |
 | unsupported:aggregate | 2 | 0.5% |
-| INCORRECT | 1 | 0.2% |
 
 ## Unsupported-instruction histogram
 
@@ -35,7 +34,7 @@
 
 ## Verification time (verified functions)
 
-- n=204, median=0.02s, p90=0.04s, max=0.86s
+- n=204, median=0.02s, p90=0.04s, max=0.89s
 
 Slowest verified:
 - 0.9s loop-exit-cond.ll:test
@@ -48,7 +47,3 @@ Slowest verified:
 - 0.2s adjust-opt-icmp5.ll:test
 - 0.2s unaligned_load_store.ll:test_load_i32
 - 0.1s adjust-opt-icmp6.ll:test
-
-## INCORRECT transformations (investigate!)
-
-- third_party/llvm-project/llvm/test/CodeGen/BPF/simplifycfg.ll:test

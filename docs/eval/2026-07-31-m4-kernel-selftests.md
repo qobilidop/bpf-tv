@@ -19,7 +19,7 @@ clean-Linux-headers cross-check).
 | unsupported:src-ir | 322 | 7.5% | Alive2-side rejections (atomics etc.) |
 | compile-error | 286 | 6.6% | mostly macOS-shim artifacts; container run pending |
 | failed-to-prove | 46 | 1.1% | |
-| INCORRECT | 20 | 0.5% | kfunc-call clusters — new false-alarm class, untriaged |
+| INCORRECT | 5 | 0.1% | after burndown (was 20); all one diagnosed class, below |
 | everything else | ~130 | ~3% | varargs, byval, arg-type, ... |
 
 ## Key findings
@@ -38,10 +38,17 @@ clean-Linux-headers cross-check).
    price of the v0 cut.
 3. **Helper calls by number (334)** — same gap as the conformance
    harness's 3 remaining tests; one feature closes both.
-4. **kfunc-call INCORRECT cluster (20)** — `verifier_bits_iter`,
-   `kfunc_call_*`, `dynptr_fail`: calls to declared kfuncs produce
-   refinement failures; untriaged, suspected callee-declaration or
-   matched-call modeling issue. THE next false-alarm burndown target.
+4. **kfunc-call INCORRECT cluster: diagnosed and burned down 20 → 5.**
+   Root cause is not kfuncs at all: **two distinct stack objects
+   escaping to callees** cannot be matched by Alive2 against the
+   lifted single-block stack (minimized: two allocas + calls fails,
+   one alloca + any number of calls verifies). Now rejected honestly
+   as `unsupported:stack-escape`. The same fix retired the
+   long-standing `simplifycfg.ll` residual — the LLVM CodeGen corpus
+   is now at **0 INCORRECT**. The 5 that remain remain reach the same
+   state through a path no static check can see (a kfunc *returns* a
+   stack-derived pointer that then reaches another call); documented,
+   not chased.
 5. **Verification cost stays trivial** (p90 = 0.05s) — solver time is
    not the bottleneck at v0 scope; feature coverage is.
 
