@@ -38,8 +38,13 @@ define i64 @f() {
 
 | compiler | emitted code | bpf-tv (`--optimize-tgt=O0`) | bpf-tv (default `-O3`) |
 |---|---|---|---|
-| bug reintroduced | `call get; exit` (zext eliminated) | **1 incorrect** ✓ | 1 correct ✗ (see below) |
+| bug reintroduced | `call get; exit` (zext eliminated) | **1 incorrect** ✓ | 1 correct ✗ → **1 incorrect** ✓ after the junk-model fix |
 | pristine (fix present) | `call get; w0 = w0; exit` | 1 correct | 1 correct |
+
+*Update, same day: finding (1) below was mitigated — unspecified bits are
+now modeled as loads from an external constant global, which -O3 cannot
+refine. The planted bug is caught at the default -O3 with corpus numbers
+and timing unchanged. See DECISIONS.md.*
 
 The counterexample direction is exactly the historical failure: the
 callee's r0 upper 32 bits (modeled as unspecified) reach the return value,

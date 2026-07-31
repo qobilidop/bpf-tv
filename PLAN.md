@@ -49,7 +49,8 @@ K2's corpus, bpf_conformance as executable spec)
   refinement; affects arm-tv reference too) — default stays O3, see
   DECISIONS.md; (2) LLVM BPF asm printer/parser round-trip hole (`rN = wM`)
   worked around by rewrite, corpus asm-parse-errors 21 -> 0, verified
-  189 -> 195. Queued: sound unfoldable junk modeling; more "would have
+  189 -> 195. Sound junk modeling landed same day (constant-global loads;
+  planted bug now caught at default -O3, corpus unchanged). Queued: more "would have
   caught" entries toward the Jitterbug-style table. Upstream reports are
   DRAFTS ONLY in docs/upstream-drafts/ (policy: Bili reviews and signs off
   before anything is filed; each draft carries a confidence checklist).

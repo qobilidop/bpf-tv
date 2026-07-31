@@ -59,6 +59,14 @@ riscv-tv likely share the window.
 - [ ] Check whether the arm-tv paper/repo already acknowledges this
       (their `disable_undef_input` comments show they thought about
       adjacent issues; search for freeze-refinement discussion)
-- [ ] Prototype the volatile-load junk modeling in bpf-tv to confirm the
-      mitigation works and measure its cost — a working fix makes the
-      report far more useful
+- [x] Prototype unfoldable junk modeling in bpf-tv — DONE (2026-07-30):
+      loads from an external *constant* global with no initializer
+      (unknown-but-fixed contents; one distinct offset per junk site).
+      Result: the planted 2019 bug is caught at default -O3; corpus
+      numbers and verification times unchanged (195 verified, median
+      0.02s). Two implementation constraints worth relaying: Alive2
+      rejects non-constant globals introduced only in the target, and
+      declarations unused by the source function are not registered by
+      llvm2alive — hence constant-global, not mutable-global (cost: no
+      per-loop-iteration or cross-call junk freshness; per-site
+      independence preserved). Volatile loads were not needed.

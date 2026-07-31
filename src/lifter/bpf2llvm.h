@@ -88,6 +88,15 @@ class bpf2llvm final : public mc2llvm {
   llvm::Value *enforceSExtZExt(llvm::Value *V, bool isSExt, bool isZExt);
   std::vector<llvm::Value *> marshallArgs(llvm::FunctionType *fTy);
 
+  // unspecified machine state is modeled as loads from an external
+  // global (contents unknown to the optimizer, havocked across calls)
+  // instead of the reference's freeze(poison), which -O3 may refine
+  // away -- see DECISIONS.md
+  llvm::Value *unspecifiedValue(unsigned Width) override;
+  llvm::GlobalVariable *unspecifiedMem{nullptr};
+  uint64_t unspecifiedOff{0};
+  static constexpr uint64_t unspecifiedMemBytes = 65536;
+
 public:
   bpf2llvm(llvm::Function *srcFn, std::unique_ptr<llvm::MemoryBuffer> MB,
            std::unordered_map<unsigned, llvm::Instruction *> &lineMap,

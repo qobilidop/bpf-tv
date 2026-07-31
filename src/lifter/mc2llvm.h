@@ -834,6 +834,17 @@ public:
     return new llvm::FreezeInst(v, nextName(), LLVMBB);
   }
 
+  /*
+   * model a value the machine leaves unspecified (initial register
+   * contents, call-clobbered registers, junk bits of sub-word values).
+   * default is the reference implementation's freeze(poison); targets
+   * may override with a representation the optimizer cannot refine --
+   * see DECISIONS.md "-O3 ... false-negative window"
+   */
+  virtual llvm::Value *unspecifiedValue(unsigned Width) {
+    return createFreeze(llvm::PoisonValue::get(getIntTy(Width)));
+  }
+
   llvm::Value *createTrunc(llvm::Value *v, llvm::Type *t) {
     if (v->getType() == t)
       return v;

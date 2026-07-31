@@ -136,6 +136,31 @@ tuple<BasicBlock *, BasicBlock *> bpf2llvm::getBranchTargetsOperand(int op) {
   return make_tuple(dst_true, dst_false);
 }
 
+Value *bpf2llvm::unspecifiedValue(unsigned Width) {
+  if (!unspecifiedMem) {
+    // external CONSTANT global with no initializer: contents are
+    // unknown-but-fixed. constant is required -- Alive2 rejects
+    // non-constant globals introduced only in the target (and a
+    // source-side declaration doesn't help: llvm2alive only registers
+    // globals the source function actually uses). the cost vs a
+    // mutable global is that re-executions of one junk site (loops)
+    // and reloads across calls see the same value; each lifted site
+    // still gets an independent value via its distinct offset.
+    auto *ty = ArrayType::get(getIntTy(8), unspecifiedMemBytes);
+    unspecifiedMem =
+        new GlobalVariable(*LiftedModule, ty, /*isConstant=*/true,
+                           GlobalValue::ExternalLinkage,
+                           /*initializer=*/nullptr, "__bpf_tv_unspecified");
+  }
+  unsigned bytes = (Width + 7) / 8;
+  assert(unspecifiedOff + bytes <= unspecifiedMemBytes &&
+         "out of unspecified-value scratch space");
+  auto *ptr = createGEP(getIntTy(8), unspecifiedMem,
+                        {getUnsignedIntConst(unspecifiedOff, 64)}, nextName());
+  unspecifiedOff += bytes;
+  return createLoad(getIntTy(Width), ptr);
+}
+
 Value *bpf2llvm::enforceSExtZExt(Value *V, bool isSExt, bool isZExt) {
   auto argTy = V->getType();
   unsigned targetWidth = 64;
@@ -152,10 +177,10 @@ Value *bpf2llvm::enforceSExtZExt(Value *V, bool isSExt, bool isZExt) {
   if (isSExt && getBitWidth(V) < targetWidth)
     V = createSExt(V, getIntTy(targetWidth));
 
-  // pad out any remaining bits with junk (frozen poison)
+  // pad out any remaining bits with junk (unspecified machine state)
   auto junkBits = targetWidth - getBitWidth(V);
   if (junkBits > 0) {
-    auto junk = createFreeze(PoisonValue::get(getIntTy(junkBits)));
+    auto junk = unspecifiedValue(junkBits);
     auto ext1 = createZExt(junk, getIntTy(targetWidth));
     auto shifted =
         createRawShl(ext1, getUnsignedIntConst(getBitWidth(V), targetWidth));

@@ -618,8 +618,7 @@ void mc2llvm::liftInst(MCInst &I) {
 }
 
 void mc2llvm::invalidateReg(unsigned Reg, unsigned Width) {
-  auto F = createFreeze(PoisonValue::get(getIntTy(Width)));
-  createStore(F, RegFile[Reg]);
+  createStore(unspecifiedValue(Width), RegFile[Reg]);
 }
 
 // create the actual storage associated with a register -- all of its
@@ -627,8 +626,7 @@ void mc2llvm::invalidateReg(unsigned Reg, unsigned Width) {
 void mc2llvm::createRegStorage(unsigned Reg, unsigned Width,
                                const string &Name) {
   auto A = createAlloca(getIntTy(Width), getUnsignedIntConst(1, 64), Name);
-  auto F = createFreeze(PoisonValue::get(getIntTy(Width)));
-  createStore(F, A);
+  createStore(unspecifiedValue(Width), A);
   RegFile[Reg] = A;
 }
 

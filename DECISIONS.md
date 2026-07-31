@@ -140,14 +140,25 @@ window is structural, and it exists in the arm-tv/riscv-tv reference too
 traffic), 21 failed-to-prove, median 0.07s / max 3.6s.
 
 **Decision:** default stays `-O3` (usable, no spurious alarms);
-`--optimize-tgt=O0` remains available as the sound-but-noisy mode. Queued
-work: model unspecified bits with nondeterminism the optimizer cannot fold
-(candidate: volatile loads from a dedicated scratch object), which would
-close the window at full speed; and raise the finding with the arm-tv
-authors, since their tools share it.
+`--optimize-tgt=O0` remains available.
 
-**Revisit when:** the sound-junk-modeling work lands, or upstream has a
-better answer.
+**Resolution (same day):** window closed by modeling unspecified bits as
+loads from `@__bpf_tv_unspecified`, an external **constant** global with
+no initializer (`bpf2llvm::unspecifiedValue`, overriding a new
+`mc2llvm::unspecifiedValue` hook whose default stays reference-faithful
+freeze(poison)). Unknown-but-fixed contents are unfoldable by -O3 and
+adversarially chosen by the solver; each junk site reads a distinct
+offset. Measured: planted 2019 bug now caught at default -O3; corpus
+unchanged (195 verified, same 9 INCORRECT, median 0.02s). Constraints
+discovered on the way, worth knowing: Alive2 rejects *non-constant*
+globals introduced only in the target, and a source-side declaration
+doesn't help because llvm2alive only registers globals the source
+function uses — hence the constant-global formulation. Its accepted
+approximation: re-executions of one site (loops) and reloads across
+calls see the same value; per-site independence is preserved.
+
+**Revisit when:** a bug class hinges on per-iteration junk freshness in
+loops, or upstream adopts a native mechanism.
 
 ## 2026-07-30 — M2 reproduction: bug-reintroduction in place, candidate = 2019 zext/COPY-physreg bug
 
