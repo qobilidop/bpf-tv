@@ -78,6 +78,21 @@ step only:
 - Post-libbpf and post-verifier-patching cut points are out of scope
   (different obligations; verifier territory).
 
+### Maps at the v0 cut point
+
+A `.maps` global needs no special modeling at this cut point. The
+compiler's obligation for `r1 = my_map ll` is a symbol relocation —
+libbpf's rewriting of that slot into a map fd happens *after* the cut.
+So a map is an ordinary named global: address identity via name
+matching, contents as emitted (zero bytes), helper calls that consume
+the address already uninterpreted with matched call sequences (the K2
+treatment above). Map-value pointers returned by lookup helpers are
+opaque unknown-call results, same as any helper return. The
+"distinguished blocks" idea from K2 is a synthesizer's need (it must
+*execute* map semantics); a translation validator at this cut point
+does not. Revisit at v1 (CO-RE): symbolic imm/off constrained by
+`.BTF.ext` is where map/field modeling actually enters.
+
 ## v0 scope
 
 In: sequential integer code, loop-free or bounded loops (Alive2's bounded

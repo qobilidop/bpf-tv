@@ -5,7 +5,7 @@
 
 | outcome | count | % |
 |---|---|---|
-| verified | 205 | 47.8% |
+| verified | 207 | 48.3% |
 | unsupported:src-ir | 110 | 25.6% |
 | other | 29 | 6.8% |
 | failed-to-prove | 18 | 4.2% |
@@ -16,7 +16,7 @@
 | unsupported:many-args | 8 | 1.9% |
 | input-error | 7 | 1.6% |
 | unsupported:arg-type | 7 | 1.6% |
-| unsupported:global-lookup | 3 | 0.7% |
+| unsupported:global-lookup | 1 | 0.2% |
 | unsupported:wide-int | 2 | 0.5% |
 | unsupported:aggregate | 2 | 0.5% |
 
@@ -53,3 +53,8 @@ Slowest verified:
 Helper-calls-by-number landed: `objdump_trivial.ll:foo` moved
 other → verified (204 → 205; still 0 INCORRECT). Full-corpus re-run
 confirms no regression from the semantic-copy helper rewrite.
+
+Maps/`$local`-alias resolution landed same day: 205 → 207 verified,
+global-lookup 3 → 1. The remaining lookup failure is `__bpf_trap`
+(a backend-synthesized symbol with no source counterpart), not a
+data-symbol gap. Still 0 INCORRECT.

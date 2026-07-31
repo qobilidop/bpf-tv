@@ -13,7 +13,7 @@ clean-Linux-headers cross-check).
 | outcome | count | % | reading |
 |---|---|---|---|
 | unsupported:inline-asm | 1735 | 40.2% | the measured cap (see below) |
-| unsupported:global-lookup | 604 | 14.0% | maps (`.maps` globals) — v0 exclusion |
+| unsupported:global-lookup | 491 | 11.4% | maps (`.maps` globals) — retired 2026-07-31, see below (an earlier revision misquoted 604/14%) |
 | **verified** | **601** | **13.9%** | median 0.03s, p90 0.05s, max 11.8s |
 | other | 571 | 13.2% | 304 helper-calls-by-number (feature landed, see below), 109 calling-conv, rest misc |
 | unsupported:src-ir | 322 | 7.5% | Alive2-side rejections (atomics etc.) |
@@ -36,10 +36,20 @@ clean-Linux-headers cross-check).
    1 varargs). `barrier_var` itself is only 51 call sites in 26 files;
    the passthrough's main value is that those sites no longer block
    functions whose other blockers (maps, volatile) fall later.
-2. **Maps are the #2 cap (14%)** — `LD_imm64` of `.maps`-section
-   globals fails lifter global lookup. The K2-style map modeling from
-   the design doc is the fix; until then this bucket is the honest
-   price of the v0 cut.
+2. **Maps are the #2 cap (11.4%; the earlier "604/14%" misquoted the run report's 491) — retired 2026-07-31.** The anticipated
+   K2-style modeling turned out to be unnecessary: at the v0 cut point
+   a map is an ordinary named global (see DESIGN.md "Maps at the v0
+   cut point"); the actual blocker was the `.Lsym$local` alias-label
+   gap in lifter symbol resolution (every `.maps` global is
+   dso_local). Re-running all 641 maps-blocked functions (491 original + 150
+   revealed by the helper/barrier_var features):
+   **485 verified**, 129 failed-to-prove (a quantified-memory solver
+   class; 60s SMT timeout does not help), **20 INCORRECT — all the
+   documented escaping-stack class** (the map-lookup stack-key idiom
+   is precisely shaped to trigger it; known-class total now 31),
+   6 call-mapping/varargs. Collateral fix: three programs with a
+   function literally named `entry` no longer break the lifted module
+   (synthetic entry-block name collision).
 3. **Helper calls by number (304; the earlier "334" over-counted by
    matching file paths)** — same gap as the conformance harness's
    `call 5` test. **Feature landed 2026-07-31** (per-ID uninterpreted

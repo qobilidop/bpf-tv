@@ -260,13 +260,19 @@ std::tuple<string, long> mc2llvm::getOffset(const string &var) {
 
 string mc2llvm::demangle(const string &name) {
   assert(name != "");
+  // dso_local definitions emit "foo:" immediately followed by the
+  // local-binding alias ".Lfoo$local:", so the data bytes accumulate
+  // under the alias label; both names denote the same object. this is
+  // how every .maps global (and any other dso_local data definition)
+  // reaches us
+  if (name.rfind(".L", 0) == 0 && name.ends_with("$local"))
+    return name.substr(2, name.size() - 2 - strlen("$local"));
   if (name.rfind(".L.", 0) == 0) {
     // the assembler has mangled local symbols, which start with a
     // dot, by prefixing them with ".L"; here we demangle
     return name.substr(2);
-  } else {
-    return name;
   }
+  return name;
 }
 
 pair<std::string, uint16_t> mc2llvm::MCExprToName(const MCExpr *expr) {

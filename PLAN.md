@@ -89,13 +89,20 @@ K2's corpus, bpf_conformance as executable spec)
    The inline-asm cap is now precisely quantified; the passthrough
    mostly prevents barrier_var from re-blocking functions once maps
    land (51 sites across 26 files).
-3. **Maps design** (checkpoint-worthy discussion first) — `.maps`
-   globals are 14% of selftest functions **+ 148 helper-bucket
-   functions now blocked only on this**; K2-style distinguished
-   blocks per the design doc.
+3. ~~**Maps design**~~ ✅ (2026-07-31): no distinguished blocks needed
+   — at the v0 cut point a map is an ordinary named global (DESIGN.md
+   "Maps at the v0 cut point", DECISIONS.md). The real blocker was the
+   `.Lsym$local` alias-label gap in symbol resolution (every `.maps`
+   global is dso_local). Result: 641 maps-blocked functions → 485
+   verified, 129 failed-to-prove (solver class), 20 INCORRECT (all the
+   documented escaping-stack class — now 31 total, strengthening the
+   per-object-stack-blocks case). Collateral: functions named `entry`
+   no longer break the lifted module (synthetic entry renamed).
 4. Cilium corpus; `-cpu v4` sweep (converts the backend-error bucket);
    per-object stack blocks (retires the last false-alarm class, now
-   11 functions); bpf2bpf local calls (last 2 conformance tests).
+   31 functions — the map-lookup stack-key idiom made this the
+   dominant remaining false-alarm source); bpf2bpf local calls (last
+   2 conformance tests).
 - **M5 — fuzzing** (later): Csmith integer subset, once the feature filter
   passes most generated programs.
 

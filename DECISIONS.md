@@ -444,3 +444,46 @@ blockers (maps, volatile) will fall later.
 
 **Revisit when:** modeling may_goto (nondeterministic branch) or the
 verifier-directive asm idioms, if ever worth it.
+
+## 2026-07-31 — Maps are ordinary globals at the v0 cut point (no distinguished blocks)
+
+**Context:** the plan anticipated "K2-style distinguished blocks" for
+`.maps` globals (14% of selftest functions blocked, plus 150 more
+surfaced when helpers landed). Investigation showed the anticipation
+was wrong twice over. (1) Semantically: at the v0 cut point (concrete
+relocations, see DESIGN.md "Cut point"), the compiler's entire
+obligation for `r1 = my_map ll` is a symbol relocation — libbpf's
+rewrite of that slot into a map fd happens after the cut, so a map is
+just a named global whose address feeds already-uninterpreted helper
+calls. Distinguished blocks are a synthesizer's need (K2 executes map
+semantics); a translation validator here does not. (2) Mechanically:
+the actual blocker was never modeling at all — dso_local data
+definitions emit `sym:` followed by the alias label `.Lsym$local:`,
+so the streamer filed the data bytes under the alias name and symbol
+resolution failed. Every `.maps` global is dso_local, hence the
+bucket's composition.
+
+**Decision:** extend `demangle` to map `.L<sym>$local` back to
+`<sym>`; map globals then lift like any other data global (their zero
+bytes, their section, mutable). No map-specific machinery. DESIGN.md
+records the cut-point argument; map/field modeling properly enters at
+v1 (CO-RE symbolic relocations).
+
+**Collateral fix:** three selftest programs name a function literally
+`entry`; the synthetic pre-entry block `checkEntryBlock` prepends was
+also named "entry", so branch resolution by name handed the LLVM
+entry block a predecessor ("Lifted module is broken"). The synthetic
+block is now `bpf-tv#entry`, which no asm label can collide with.
+
+**Measured:** of the 641 maps-blocked functions, 485 verify, 129
+failed-to-prove (quantified-memory solver class; a 60s SMT timeout
+does not help), 20 INCORRECT — every one the documented
+escaping-stack residual (helper returns a pointer the model derives
+from the escaped stack key, then it is dereferenced; the map-lookup
+idiom is precisely shaped to trigger this), 6 call-mapping/varargs.
+Known-class INCORRECT total is now 31, which materially strengthens
+the case for per-object stack blocks (queued).
+
+**Revisit when:** v1 CO-RE lands, or per-object stack blocks retire
+the escaping-stack class, or map-specific facts (distinct maps'
+values don't alias) are needed to discharge failed-to-proves.
