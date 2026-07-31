@@ -16,3 +16,5 @@ Each draft carries a status header:
 | [bpf-asm-roundtrip-mov32-64.md](bpf-asm-roundtrip-mov32-64.md) | LLVM (backend:BPF) | draft |
 | [armtv-o3-false-negative-window.md](armtv-o3-false-negative-window.md) | arm-tv authors (methodological) | draft |
 | [alive2-asm-byte-kind-call-inputs.md](alive2-asm-byte-kind-call-inputs.md) | AliveToolkit/alive2 (asm-mode modeling) | draft |
+| [armtv-lifter-symbol-resolution-bugs.md](armtv-lifter-symbol-resolution-bugs.md) | arm-tv authors (backend_tv bugs) | draft |
+| [armtv-per-object-stack-blocks.md](armtv-per-object-stack-blocks.md) | arm-tv authors (methodological + patch offer) | draft |
