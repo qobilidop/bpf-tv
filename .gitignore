@@ -9,3 +9,7 @@ compile_commands.json
 
 # M4 corpus: pinned by scripts/fetch-linux-corpus.sh, too large for a submodule
 third_party/linux/
+
+# Linux core dumps from crashing tools under test (container runs use cwd)
+/core
+core.*
