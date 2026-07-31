@@ -12,8 +12,11 @@ void MCFunction::checkEntryBlock(unsigned jumpOpcode) {
   // LLVM doesn't let the entry block be a jump target, but assembly
   // does; we can fix that up by adding an extra block at the start
   // of the function. simplifyCFG will clean this up when it's not
-  // needed.
-  BBs.emplace(BBs.begin(), "entry");
+  // needed. the name must not collide with any asm label -- a
+  // function literally named "entry" (kernel selftests have these)
+  // would otherwise make branch resolution by name pick this block
+  // and hand the LLVM entry block a predecessor
+  BBs.emplace(BBs.begin(), "bpf-tv#entry");
   MCInst jmp_instr;
   jmp_instr.setOpcode(jumpOpcode);
   jmp_instr.addOperand(MCOperand::createImm(1));
