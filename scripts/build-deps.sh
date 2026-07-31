@@ -49,7 +49,10 @@ cmake -S "$ALIVE2_SRC" -B "$ALIVE2_BUILD" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DBUILD_LLVM_UTILS=ON \
   -DLLVM_DIR="$LLVM_BUILD/lib/cmake/llvm" \
-  -DCMAKE_PREFIX_PATH="$PREFIX_PATH"
+  -DCMAKE_PREFIX_PATH="$PREFIX_PATH" \
+  -DEXTERNAL_PROJECTS=bpf-tv \
+  -DEXTERNAL_BPF_TV_SOURCE_DIR="$ROOT"
 ninja -C "$ALIVE2_BUILD" -j "$JOBS"
 
-echo "deps built: $LLVM_BUILD, $ALIVE2_BUILD"
+echo "built: $LLVM_BUILD, $ALIVE2_BUILD"
+echo "bpf-tv binary: $ALIVE2_BUILD/bpf-tv/bpf-tv"
