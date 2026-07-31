@@ -22,6 +22,19 @@ clean-Linux-headers cross-check).
 | INCORRECT | 5 | 0.1% | after burndown (was 20); all one diagnosed class, below |
 | everything else | ~130 | ~3% | varargs, byval, arg-type, ... |
 
+## Running total (2026-07-31, after helpers + barrier_var + maps)
+
+A fresh full sweep (same flags/corpus) confirms: **1212 verified =
+28.1%** of 4316 functions — doubled from the 13.9% first measurement.
+`unsupported:global-lookup` is gone from the table entirely.
+**INCORRECT = 31, every one the documented escaping-stack class**
+(list matches the per-bucket triage exactly; no new classes). The
+largest remaining reducible buckets are failed-to-prove (191,
+quantified-memory solver class) and that INCORRECT class (per-object
+stack blocks queued); inline asm (39.8%) is dominated by out-of-scope
+`__naked` programs; "other" (408) is mostly calling-conv and misc
+one-offs.
+
 ## Key findings
 
 1. **Inline asm is the #1 coverage cap on real-world code — now
