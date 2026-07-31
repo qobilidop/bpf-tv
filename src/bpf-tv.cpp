@@ -57,8 +57,10 @@ llvm::cl::opt<std::string>
                           "= first function in the module)"),
            llvm::cl::cat(alive_cmdargs));
 
+// named "cpu" rather than "mcpu" because llvm::codegen::RegisterCodeGenFlags
+// (constructed inside alive2's optimize_module) registers "mcpu" itself
 llvm::cl::opt<string> opt_cpu(
-    LLVM_ARGS_PREFIX "mcpu",
+    LLVM_ARGS_PREFIX "cpu",
     llvm::cl::desc("BPF cpu to target: v1-v4 (default=v3)"),
     llvm::cl::cat(alive_cmdargs), llvm::cl::init("v3"));
 

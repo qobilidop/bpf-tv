@@ -750,10 +750,16 @@ void bpf2llvm::lift(MCInst &I) {
   // ---- control flow ----
   case BPF::JMP: {
     auto &op = CurInst->getOperand(0);
-    assert(op.isExpr());
-    auto *bb = getBB(CurInst->getOperand(0));
-    assert(bb);
-    createBranch(bb);
+    if (op.isExpr()) {
+      auto *bb = getBB(CurInst->getOperand(0));
+      assert(bb);
+      createBranch(bb);
+    } else {
+      // synthetic branch inserted by checkEntryBlock(); its target is
+      // the block's unique successor
+      assert(MCBB->getSuccs().size() == 1);
+      createBranch(getBBByName(MCBB->getSuccs()[0]->getName()));
+    }
     break;
   }
   case BPF::JEQ_rr:
