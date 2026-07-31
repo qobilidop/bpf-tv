@@ -47,9 +47,26 @@ rather than reported as false miscompilations. A new
 `unsupported:ptr-bytes` gate (17) covers the pr57872 byte-kind class:
 memcpy of possibly-pointer-carrying memory into an escaping stack
 object cannot preserve pointer bytes through integer registers.
-failed-to-prove is now the largest reducible bucket (287, mostly
-quantified-memory solver cost); inline asm (39.9%) remains dominated
-by out-of-scope `__naked` programs.
+failed-to-prove is now the largest reducible bucket (mostly
+quantified-memory solver cost); inline asm remains dominated by
+out-of-scope `__naked` programs.
+
+## Same-day addenda (fastcc, alignment clamp, measurements)
+
+- **fastcc accepted** (the backend lowers it identically to C): the
+  158-function calling-convention bucket collapses; 110 verify.
+  Diagnosing the two INCORRECTs this exposed found an alignment
+  modeling bug in the split (O3-stamped aligns proved against the
+  16-aligned frame that a split object cannot justify); with the
+  clamp, both verify. **Record sweep: 1386 verified = 32.1%**,
+  INCORRECT = 1 (the cpumask singleton), "other" 168 → 10.
+- **failed-to-prove is model-hard, not budget-hard**: re-running the
+  315-function bucket at 60s SMT converts only 48 (15%); 249 stay
+  failed-to-prove, 16 time out. The 10s default stands.
+- Sweep infrastructure: 12-way default, record-reuse cache and
+  compile stamps (`REUSE=1 ./scripts/m4-sweep.sh native`) — fresh
+  sweep 8:19, same-binary incremental re-sweep 14s. Back-to-back
+  sweeps jitter by ±1 verified at the SMT-timeout boundary.
 
 ## Key findings
 
