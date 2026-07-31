@@ -13,3 +13,4 @@ third_party/linux/
 # Linux core dumps from crashing tools under test (container runs use cwd)
 /core
 core.*
+__pycache__/

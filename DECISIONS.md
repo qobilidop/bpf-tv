@@ -375,3 +375,43 @@ Alive2 matching multiple source blocks into one target block.
 
 **Revisit when:** attempting per-object stack modeling, or if upstream
 relaxes local-block matching.
+
+## 2026-07-31 — Helper calls by number: one uninterpreted function per ID
+
+**Context:** selftest-style BPF calls kernel helpers through an
+integer-constant function pointer (`call i64 inttoptr (i64 N to ptr)(...)`);
+the backend emits `call N`. This blocked 334 selftest functions and
+the conformance `call 5` test. Alive2 accepts the source-side indirect
+call, but the lifted target would have no matching callee — an
+indirect call through constant N and a named external call don't unify
+as the same uninterpreted function.
+
+**Decision:** synthesize one external declaration per helper ID,
+`@__bpf_helper_N`, and make both sides call it. The driver rewrites
+only the SEMANTIC copy of the source (after `CloneModule`, so codegen
+still sees the original and still emits `call N`); the lifter maps a
+JAL with an immediate operand back to `@__bpf_helper_N`, typed from
+the source call site, and requires the source-side callee name to
+match the immediate (a wrong helper ID in the asm is a hard error, not
+a silent unification — verified by mutation test). Bytes mode
+(conformance) has no source module, so helpers get the generic BPF
+helper ABI `i64 (i64 x 5)` and the harness resolves the symbol at JIT
+time.
+
+**Why per-ID uninterpreted, not modeled semantics:** helper ID → C
+signature is a kernel-version-dependent table; the refinement question
+(registers/ABI/scheduling around the call) doesn't need helper
+semantics, only "same unknown function on both sides" — exactly the
+existing named-call path. Naming by number keeps bpf-tv independent of
+any helper table.
+
+**Cost:** helper-specific properties (e.g. a helper that never
+returns, or argument-memory read-only-ness) are not modeled, so code
+whose correctness depends on them may fail to prove (not INCORRECT).
+Local calls (`call` with src_reg=1) remain excluded and are now
+detected from the raw encoding in bytes mode — the MCInst drops the
+src field that distinguishes them.
+
+**Revisit when:** bpf2bpf local calls land, or a helper-signature
+table becomes worth carrying (e.g. to model `bpf_tail_call`'s
+noreturn-ish behavior or writable args precisely).

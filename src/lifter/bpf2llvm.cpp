@@ -343,6 +343,54 @@ void bpf2llvm::doCall(FunctionCallee FC, CallInst *llvmCI,
   }
 }
 
+// "call N" -- a BPF helper referenced by number. in TV mode the
+// driver has rewritten the semantic source copy to call
+// @__bpf_helper_N (rewriteHelperCallsByNumber in bpf-tv.cpp), so we
+// resolve that declaration and route through the regular
+// uninterpreted-call path; the immediate must agree with the
+// source-side callee. bytes mode (conformance) has no source module;
+// helpers get the generic BPF helper ABI (five i64 arguments in
+// r1-r5, result in r0) and the harness resolves the symbol at JIT
+// time.
+void bpf2llvm::doHelperCall(int64_t id) {
+  if (id < 0) {
+    *out << "\nERROR: negative helper ID " << id << "\n\n";
+    exit(-1);
+  }
+  string name = "__bpf_helper_" + to_string(id);
+  *out << "lifting a helper call by number: " << name << "\n";
+
+  if (bytesMode) {
+    auto i64 = getIntTy(64);
+    auto *fTy = FunctionType::get(i64, {i64, i64, i64, i64, i64}, false);
+    auto FC = LiftedModule->getOrInsertFunction(name, fTy);
+    vector<Value *> args;
+    for (unsigned reg = BPF::R1; reg <= BPF::R5; ++reg)
+      args.push_back(readReg64(reg));
+    auto *CI = CallInst::Create(FC, args, "", LLVMBB);
+    for (unsigned reg = BPF::R1; reg <= BPF::R5; ++reg)
+      invalidateReg(reg, 64);
+    updateReg64(CI, BPF::R0);
+    return;
+  }
+
+  auto *llvmInst = getCurLLVMInst();
+  CallInst *llvmCI = llvmInst ? dyn_cast<CallInst>(llvmInst) : nullptr;
+  if (!llvmCI) {
+    *out << "error: can't locate corresponding source-side call instruction\n";
+    exit(-1);
+  }
+  auto *srcCallee = llvmCI->getCalledFunction();
+  if (!srcCallee || srcCallee->getName() != name) {
+    *out << "\nERROR: source-side callee of helper call " << id
+         << " is not " << name << "\n\n";
+    exit(-1);
+  }
+  auto *callee = dyn_cast<Function>(lookupGlobal(name));
+  assert(callee);
+  doCall(FunctionCallee(callee), llvmCI, name);
+}
+
 void bpf2llvm::doReturn() {
   auto i32ty = getIntTy(32);
   auto i64ty = getIntTy(64);
@@ -465,6 +513,7 @@ void bpf2llvm::checkCallingConv(Function *fn) {
 
 pair<Function *, Function *> bpf2llvm::runBytes(ArrayRef<uint8_t> bytes) {
   setupLift();
+  bytesMode = true;
 
   unique_ptr<MCDisassembler> DisAsm(
       Targ->createMCDisassembler(*STI.get(), *MCCtx.get()));
@@ -487,6 +536,15 @@ pair<Function *, Function *> bpf2llvm::runBytes(ArrayRef<uint8_t> bytes) {
     if (status != MCDisassembler::Success || size == 0) {
       *out << "\nERROR: cannot disassemble instruction at offset " << off
            << "\n";
+      exit(-1);
+    }
+    // the MCInst for a call drops the src-register field that
+    // distinguishes helper calls (src 0, imm = helper ID) from bpf2bpf
+    // local calls (src 1, imm = pc-relative target; RFC 9669 4.3.2) --
+    // check the raw encoding (regs byte is dst | src << 4)
+    if (inst.getOpcode() == BPF::JAL &&
+        ((bytes[off + 1] >> 4) & 0xf) == 1) {
+      *out << "\nERROR: bpf2bpf local calls are not supported yet\n\n";
       exit(-1);
     }
     unitToInsn[off / 8] = insns.size();
@@ -1240,13 +1298,10 @@ void bpf2llvm::lift(MCInst &I) {
   }
 
   case BPF::JAL:
-    if (!CurInst->getOperand(0).isExpr()) {
-      // "call N" -- a helper referenced by number (only reachable via
-      // asm input or non-empty inline asm); no symbol to resolve
-      *out << "\nERROR: calls to helpers by number are not supported\n\n";
-      exit(-1);
-    }
-    doDirectCall();
+    if (!CurInst->getOperand(0).isExpr())
+      doHelperCall(CurInst->getOperand(0).getImm());
+    else
+      doDirectCall();
     break;
 
   case BPF::RET:

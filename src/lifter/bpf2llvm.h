@@ -36,6 +36,8 @@ class bpf2llvm final : public mc2llvm {
 
   void doCall(llvm::FunctionCallee FC, llvm::CallInst *llvmCI,
               const std::string &calleeName) override;
+  // "call N" -- a helper referenced by number (see doHelperCall)
+  void doHelperCall(int64_t id);
   void doReturn() override;
 
   void platformInit() override;
@@ -96,6 +98,9 @@ class bpf2llvm final : public mc2llvm {
   llvm::GlobalVariable *unspecifiedMem{nullptr};
   uint64_t unspecifiedOff{0};
   static constexpr uint64_t unspecifiedMemBytes = 65536;
+
+  // set by runBytes: no source module to resolve helper calls against
+  bool bytesMode{false};
 
 public:
   bpf2llvm(llvm::Function *srcFn, std::unique_ptr<llvm::MemoryBuffer> MB,

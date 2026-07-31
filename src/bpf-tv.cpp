@@ -177,6 +177,36 @@ void stripEmptyInlineAsm(
   }
 }
 
+/*
+ * helper calls by number: selftest-style BPF code calls kernel
+ * helpers through an integer-constant function pointer --
+ * `call i64 inttoptr (i64 N to ptr)(...)` -- and the backend emits
+ * `call N`. rewrite the SEMANTIC copy of the source to call a
+ * synthesized external declaration @__bpf_helper_N (typed like the
+ * call site) so that source and lifted target agree on one
+ * uninterpreted function per helper ID. codegen runs on the
+ * unmodified clone and still emits `call N`; the lifter resolves the
+ * immediate back to @__bpf_helper_N (see bpf2llvm::doHelperCall).
+ */
+void rewriteHelperCallsByNumber(llvm::Function *fn) {
+  auto *M = fn->getParent();
+  for (auto &bb : *fn) {
+    for (auto &i : bb) {
+      auto *ci = dyn_cast<llvm::CallInst>(&i);
+      if (!ci)
+        continue;
+      auto *ce = dyn_cast<llvm::ConstantExpr>(ci->getCalledOperand());
+      if (!ce || ce->getOpcode() != llvm::Instruction::IntToPtr)
+        continue;
+      auto *id = dyn_cast<llvm::ConstantInt>(ce->getOperand(0));
+      if (!id || id->isNegative())
+        continue;
+      auto name = "__bpf_helper_" + std::to_string(id->getZExtValue());
+      ci->setCalledFunction(M->getOrInsertFunction(name, ci->getFunctionType()));
+    }
+  }
+}
+
 // find and collapse sequences of the form ptrToInt, add, intToPtr
 // into a single GEP instruction
 void tryReplacePtrtoInt(llvm::Function *fn) {
@@ -252,6 +282,7 @@ void doit(llvm::Module *srcModule, llvm::Function *srcFn, Verifier &verifier,
     // copy that the refinement check consumes
     auto CodegenM = llvm::CloneModule(*srcModule);
     stripEmptyInlineAsm(srcFn, lineMap);
+    rewriteHelperCallsByNumber(srcFn);
 
     // pre-flight the stripped source through Alive2 BEFORE running the
     // backend: inputs Alive2 can't process anyway (atomics, remaining
@@ -278,6 +309,7 @@ void doit(llvm::Module *srcModule, llvm::Function *srcFn, Verifier &verifier,
     // hand-mutated) still map calls back to their source instructions
     lifter::addDebugInfo(srcFn, lineMap);
     stripEmptyInlineAsm(srcFn, lineMap);
+    rewriteHelperCallsByNumber(srcFn);
     AsmBuffer = ExitOnErr(
         llvm::errorOrToExpected(llvm::MemoryBuffer::getFile(opt_asm_input)));
   }

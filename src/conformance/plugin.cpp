@@ -42,6 +42,17 @@ using namespace std;
 // code actually executes them
 static uint8_t unspecified_mem[65536];
 
+// bpf_conformance test helper 5 ("unwind"): returns its first
+// argument. the full unwind semantics -- terminate the program when
+// the helper returns 0 -- only matter for a success-path test that
+// also needs bpf2bpf local calls; the corpus's call_unwind_fail only
+// exercises the nonzero (identity) path. helpers lift to the generic
+// 5 x i64 ABI (bpf2llvm::doHelperCall bytes mode).
+static uint64_t bpf_helper_unwind(uint64_t r1, uint64_t, uint64_t, uint64_t,
+                                  uint64_t) {
+  return r1;
+}
+
 static vector<uint8_t> parse_hex(const string &s) {
   vector<uint8_t> out;
   string clean;
@@ -142,6 +153,9 @@ int main(int argc, char **argv) {
   orc::SymbolMap syms;
   syms[jit->mangleAndIntern("__bpf_tv_unspecified")] = orc::ExecutorSymbolDef(
       orc::ExecutorAddr::fromPtr(&unspecified_mem[0]), JITSymbolFlags());
+  syms[jit->mangleAndIntern("__bpf_helper_5")] = orc::ExecutorSymbolDef(
+      orc::ExecutorAddr::fromPtr(&bpf_helper_unwind),
+      JITSymbolFlags::Callable);
   if (auto err = dylib.define(orc::absoluteSymbols(syms))) {
     cerr << "define: " << toString(std::move(err)) << "\n";
     return 1;
