@@ -120,14 +120,19 @@ rejection is removed.
 **Measured:** 7 of the 9 former INCORRECTs now genuinely verify; corpus
 verified 196 → 204; `pr57872` is a slow-but-honest failed-to-prove.
 
-**Genuine residual (1 corpus function, `simplifycfg.ll`):** cause not
-yet root-diagnosed. The arm-tv/Alive2 study (2026-07-30) corrected an
-earlier mis-attribution: Alive2 does NOT model callee access to local
-blocks at all (`ir/memory.cpp` TODOs: "missing refinement of escaped
-local blocks", "handle havoc of local blocks"), so "callee could alias
-sibling stack data" is not something the encoding can even observe.
-`simplifycfg.ll` exercises a callee *writing through* an escaped slot —
-exactly the unmodeled dimension — and needs its own bisection.
+**Genuine residual (1 corpus function, `simplifycfg.ll`), now
+diagnosed to a minimal reproducer (2026-07-30):** a pointer *written by
+one callee* into an escaped slot, loaded back, and *passed as an
+argument to a second call*. Loading and branching on such a pointer
+verifies; loading an integer verifies; only the loaded-pointer-as-
+call-arg shape fails. Mechanism (consistent with the Alive2 study):
+the lifted side materializes the pointer from raw stack-block bytes —
+physical — while the source's is logical, and asm mode's
+`isLogical() == other.isLogical()` conjunct in `Pointer::fninputRefined`
+rejects the call-argument match. No ptrtoint chain exists for our
+collapse to rewrite, so the only fixes are upstream: drop the conjunct
+(one line, precedent #1133/#1153) or model callee writes to escaped
+locals. Kept as the one documented INCORRECT until then.
 
 **Inherited soundness caveat (from the same study, worth its own line):**
 because callee writes to escaped local blocks are unmodeled, refinement
