@@ -5,9 +5,9 @@
 
 | outcome | count | % |
 |---|---|---|
-| verified | 204 | 47.6% |
+| verified | 205 | 47.8% |
 | unsupported:src-ir | 110 | 25.6% |
-| other | 30 | 7.0% |
+| other | 29 | 6.8% |
 | failed-to-prove | 18 | 4.2% |
 | unsupported:insn | 10 | 2.3% |
 | unsupported:inline-asm | 10 | 2.3% |
@@ -34,7 +34,7 @@
 
 ## Verification time (verified functions)
 
-- n=204, median=0.02s, p90=0.04s, max=0.89s
+- n=205, median=0.02s, p90=0.04s, max=0.85s
 
 Slowest verified:
 - 0.9s loop-exit-cond.ll:test
@@ -47,3 +47,9 @@ Slowest verified:
 - 0.2s adjust-opt-icmp5.ll:test
 - 0.2s unaligned_load_store.ll:test_load_i32
 - 0.1s adjust-opt-icmp6.ll:test
+
+## 2026-07-31 update
+
+Helper-calls-by-number landed: `objdump_trivial.ll:foo` moved
+other → verified (204 → 205; still 0 INCORRECT). Full-corpus re-run
+confirms no regression from the semantic-copy helper rewrite.
