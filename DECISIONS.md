@@ -329,3 +329,23 @@ committed directly — small enough to vendor.
 
 **Revisit when:** git submodule gains usable shallow+sparse support, or
 the corpus needs to move in lockstep with other pins.
+
+## 2026-07-31 — Container mount point standardized at /work
+
+**Context:** CMake build trees bake absolute paths. The devcontainer CLI
+mounted at `/workspaces/bpf-tv` while `dev.sh`'s original docker path and
+the long-lived `build-linux` tree used `/work` — the mismatch made the
+devcontainer CLI unable to reuse existing builds (cache paths broke).
+
+**Decision:** `/work` everywhere: `devcontainer.json` sets
+`workspaceMount`/`workspaceFolder`, matching raw `docker run -v $PWD:/work`
+and CI's build trees. A ccache volume (`bpf-tv-ccache`) persists across
+containers, and `build-deps.sh` uses ccache when present plus
+memory-bounded parallelism (min(cores, mem/3GB) — LLVM's largest TUs need
+~3 GB and an over-parallel build in a memory-capped VM gets OOM-killed).
+
+**Host note (not in-repo):** local docker is colima; resized 2026-07-31
+from 4 CPU / 8 GB to 12 CPU / 24 GB (`colima start --cpu 12 --memory 24`).
+
+**Revisit when:** publishing a prebuilt toolchain image (see PLAN), which
+must also bake /work paths.

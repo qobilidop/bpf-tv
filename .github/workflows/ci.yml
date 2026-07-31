@@ -37,8 +37,31 @@ jobs:
             build-linux/alive2
           key: deps-${{ runner.os }}-${{ hashFiles('.gitmodules') }}-${{ hashFiles('scripts/build-deps.sh') }}
 
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-${{ hashFiles('.gitmodules') }}
+          restore-keys: ccache-${{ runner.os }}-
+
       - name: Build dependencies and bpf-tv
         run: bash scripts/build-deps.sh
+
+      - name: Conformance suite
+        run: |
+          if ! dpkg -s libboost-program-options-dev >/dev/null 2>&1; then
+            echo "boost not in image yet (pre-refresh); skipping"
+            exit 0
+          fi
+          git submodule update --init --depth 1 --recursive third_party/bpf_conformance
+          cmake -S third_party/bpf_conformance -B "$BUILD_ROOT/bpf_conformance" \
+            -G Ninja -DCMAKE_BUILD_TYPE=Release
+          ninja -C "$BUILD_ROOT/bpf_conformance"
+          "$BUILD_ROOT/bpf_conformance/bin/bpf_conformance_runner" \
+            --test_file_directory third_party/bpf_conformance/tests \
+            --plugin_path "$BUILD_ROOT/alive2/bpf-tv/bpf-tv-conformance-plugin" \
+            --cpu_version v4 | tee conf.txt
+          grep -qE "Passed 3(09|1[0-2]) out of" conf.txt
 
       - name: End-to-end suite
         run: bash tests/e2e/run.sh

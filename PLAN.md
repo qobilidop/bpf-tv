@@ -68,6 +68,15 @@ K2's corpus, bpf_conformance as executable spec)
 - **M5 — fuzzing** (later): Csmith integer subset, once the feature filter
   passes most generated programs.
 
+## Infrastructure follow-ups
+
+- **Prebuilt toolchain image**: publish `bpf-tv-toolchain` to GHCR (devcontainer
+  image + prebuilt /work/build-linux for the pinned submodules), rebuilt when
+  pins change. Turns CI from cache-dependent hour-long builds into minutes and
+  gives contributors instant onboarding. Needs: GH-runner disk headroom tricks,
+  image ~1.5 GB compressed, pin-match assertion in CI with fallback to source
+  build.
+
 ## Execution notes
 
 - Every tricky design decision gets a [DECISIONS.md](DECISIONS.md) entry

@@ -8,6 +8,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake ninja-build re2c ccache \
     git python3 ca-certificates curl unzip \
     zlib1g-dev \
+    libboost-dev libboost-filesystem-dev libboost-program-options-dev \
+    libelf-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Z3, built from a pinned tag (apt's z3 is ancient and brew's is untested by

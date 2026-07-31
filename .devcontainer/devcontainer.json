@@ -1,9 +1,18 @@
 {
   "name": "bpf-tv",
   "build": { "dockerfile": "Dockerfile" },
+  // /work everywhere: the devcontainer CLI, VS Code, raw `docker run`
+  // (dev.sh), and CI must agree on one mount point, because CMake
+  // build trees bake absolute paths. Do not change casually — it
+  // invalidates every build-linux tree.
+  "workspaceMount": "source=${localWorkspaceFolder},target=/work,type=bind",
+  "workspaceFolder": "/work",
   "containerEnv": {
-    "BUILD_ROOT": "${containerWorkspaceFolder}/build-linux"
+    "BUILD_ROOT": "/work/build-linux"
   },
+  "mounts": [
+    "source=bpf-tv-ccache,target=/root/.ccache,type=volume"
+  ],
   "postCreateCommand": "git submodule update --init --depth 1",
   "customizations": {
     "vscode": {
