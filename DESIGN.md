@@ -150,6 +150,17 @@ miscompile #210280 as a target), gotox/jump tables, 128-bit values.
   treat container Z3 as the configuration of record.
 - All builds are out-of-tree under `$BUILD_ROOT` (default `build/`;
   `build-linux/` in the devcontainer) so submodules stay clean.
+- **Bumping the pins** (the three pins form a triple anchored on the arm-tv
+  reference; always move them together):
+  1. Advance `third_party/alive2-arm-tv` to the new arm-tv branch head.
+  2. Re-pin `third_party/alive2` to
+     `git merge-base upstream/master <new arm-tv head>` — the official core
+     the reference code was rebased onto.
+  3. Re-pin `third_party/llvm-project` to the last LLVM main commit dated
+     with the branch's newest "keep up with LLVM API change"-style sync
+     (same-date heuristic; alive2 declares no LLVM version).
+  4. Rebuild everything, diff `backend_tv/` against the previous reference
+     to port any lifter-plumbing fixes into `src/lifter/`, rerun the suite.
 - `scripts/build-deps.sh` builds both; top-level CMake then builds `bpf-tv`
   against them (Minotaur-style out-of-tree consumer).
 
