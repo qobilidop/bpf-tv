@@ -18,7 +18,10 @@ Emits a JSONL record per function and a markdown summary.
 
 import argparse
 import concurrent.futures
+import functools
+import hashlib
 import json
+import os
 import pathlib
 import re
 import signal
@@ -74,6 +77,20 @@ def functions_in(ll_path: pathlib.Path):
     except OSError:
         return None
     return DEFINE_RE.findall(text)
+
+
+@functools.lru_cache(maxsize=None)
+def _file_sha(path: str) -> str:
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()[:16]
+
+
+def cache_key(bpf_tv, ll, fn, smt_to, extra_args) -> str:
+    return "|".join([_file_sha(str(bpf_tv)), _file_sha(str(ll)), fn,
+                     str(smt_to), ",".join(extra_args)])
 
 
 def classify(rc: int, out: str, timed_out: bool):
@@ -134,6 +151,7 @@ def run_one(bpf_tv, ll, fn, smt_to, wall_cap, extra_args=()):
         "outcome": outcome,
         "detail": detail,
         "wall_s": round(wall, 3),
+        "key": cache_key(bpf_tv, ll, fn, smt_to, extra_args),
     }
 
 
@@ -144,7 +162,9 @@ def main():
                         "third_party/llvm-project/llvm/test/CodeGen/BPF"))
     ap.add_argument("--bpf-tv", type=pathlib.Path,
                     default=pathlib.Path("build/alive2/bpf-tv/bpf-tv"))
-    ap.add_argument("--jobs", type=int, default=8)
+    ap.add_argument("--jobs", type=int,
+                default=max(4, (os.cpu_count() or 8) - 4),
+                help="parallel workers (default: cores - 4)")
     ap.add_argument("--smt-to", type=int, default=10000, help="ms")
     ap.add_argument("--wall-cap", type=int, default=120, help="s")
     ap.add_argument("--recursive", action="store_true")
@@ -157,6 +177,10 @@ def main():
                          "clang (-target bpf) before validation")
     ap.add_argument("--cflag", action="append", default=[],
                     help="extra clang flag (repeatable)")
+    ap.add_argument("--reuse", type=pathlib.Path, default=None,
+                    help="baseline corpus-results.jsonl: reuse records "
+                         "whose cache key (input hash, fn, bpf-tv binary "
+                         "hash, flags) is unchanged instead of re-running")
     args = ap.parse_args()
 
     outdir = args.out or pathlib.Path("build/eval")
@@ -174,6 +198,14 @@ def main():
             ll = lldir / (c.stem + ".ll")
             cmd = [str(args.clang), "-target", "bpf", "-O2", "-emit-llvm",
                    "-S", *args.cflag, str(c), "-o", str(ll)]
+            # skip recompilation when source+flags+clang are unchanged
+            stamp = ll.with_suffix(".stamp")
+            key = "|".join([_file_sha(str(args.clang)), _file_sha(str(c)),
+                            " ".join(args.cflag)])
+            if ll.exists() and stamp.exists() and \
+                    stamp.read_text() == key:
+                files.append(ll)
+                continue
             p = subprocess.run(cmd, capture_output=True, text=True,
                                timeout=120)
             if p.returncode != 0:
@@ -182,6 +214,7 @@ def main():
                                 "outcome": "compile-error",
                                 "detail": first, "wall_s": 0.0})
             else:
+                stamp.write_text(key)
                 files.append(ll)
     else:
         files = sorted(args.corpus.rglob("*.ll") if args.recursive
@@ -206,17 +239,39 @@ def main():
           f"{args.jobs} workers, smt-to={args.smt_to}ms, "
           f"wall-cap={args.wall_cap}s")
 
+    # same-binary/same-input records from a baseline run are
+    # deterministic (modulo solver-timeout jitter): reuse them
+    baseline = {}
+    if args.reuse and args.reuse.exists():
+        for line in args.reuse.read_text().splitlines():
+            r = json.loads(line)
+            if r.get("key"):
+                baseline[r["key"]] = r
+    todo = []
+    reused = 0
+    for ll, fn in work:
+        k = cache_key(args.bpf_tv, ll, fn, args.smt_to,
+                      tuple(args.extra_arg))
+        hit = baseline.get(k)
+        if hit is not None:
+            records.append(hit)
+            reused += 1
+        else:
+            todo.append((ll, fn))
+    if reused:
+        print(f"  reused {reused} baseline records; running {len(todo)}")
+
     done = 0
     with concurrent.futures.ThreadPoolExecutor(args.jobs) as ex:
         futs = {ex.submit(run_one, args.bpf_tv, ll, fn,
                           args.smt_to, args.wall_cap,
                           tuple(args.extra_arg)): (ll, fn)
-                for ll, fn in work}
+                for ll, fn in todo}
         for fut in concurrent.futures.as_completed(futs):
             records.append(fut.result())
             done += 1
             if done % 50 == 0:
-                print(f"  ...{done}/{len(work)}")
+                print(f"  ...{done}/{len(todo)}")
 
     jsonl = outdir / "corpus-results.jsonl"
     with open(jsonl, "w") as f:

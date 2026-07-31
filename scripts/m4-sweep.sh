@@ -22,7 +22,17 @@ else
               "--cflag=-I$BUILD/m4-shim")
 fi
 
+# REUSE=1 reuses baseline records (same binary + same input) from the
+# previous run in $OUT -- makes an incremental re-sweep after a
+# bucket-targeted change take minutes instead of re-solving everything
+REUSE_FLAGS=()
+if [ "${REUSE:-0}" = 1 ] && [ -f "$OUT/corpus-results.jsonl" ]; then
+  cp "$OUT/corpus-results.jsonl" "$OUT/corpus-results.baseline.jsonl"
+  REUSE_FLAGS=(--reuse "$OUT/corpus-results.baseline.jsonl")
+fi
+
 python3 "$ROOT/scripts/corpus_run.py" \
+  ${REUSE_FLAGS[@]+"${REUSE_FLAGS[@]}"} \
   --corpus "$L/tools/testing/selftests/bpf/progs" \
   --clang "$BUILD/llvm/bin/clang" \
   --bpf-tv "$BUILD/alive2/bpf-tv/bpf-tv" \

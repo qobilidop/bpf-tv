@@ -3,27 +3,42 @@
 Working observations that aren't design decisions (DECISIONS.md),
 plan state (PLAN.md), or report numbers (docs/eval/). Newest at top.
 
-## Performance: sweeps are ~97% per-process overhead
+## Performance: measured (earlier hypothesis below was WRONG)
 
-Last full sweep: 4316 functions in ~13 min at 8 workers ≈ 1.4 s/fn
-average wall, while the median *solver* time on verified functions is
-0.03 s. So nearly all sweep time is fixed cost per process:
+Measured with per-outcome wall sums from the sweep jsonl: the sweep
+budget is NOT per-process overhead. Individual fast functions cost
+0.01-0.3s wall total (parse+codegen+lift ~0.02s even on the largest
+files; logging ~0.03-0.07MB — both negligible). The real budget of a
+~87 worker-minute sweep:
 
-- full-module `.ll` parse per function (some selftest files are large
-  and get re-parsed once per contained function),
-- two full-module clones per run (driver CodegenM + generateAsm's
-  internal clone),
-- LLVM + Z3 init per process,
-- the lifter's debug logging (every instruction/global lifted →
-  megabytes of captured stdout per sweep).
+- failed-to-prove: 65.6 min (315 fns x 12.5s avg — they run to the
+  10s SMT timeout) = 75% of everything
+- stack-escape downgrades: 10.2 min (run to unsound, then rejected)
+- ALL 1385 verified functions: 8.6 min total
 
-Candidate fixes, in rough value order: (1) quiet mode for corpus runs
-(route lifter `*out` to a null stream), (2) pre-split corpora into
-per-function modules once (parse once, emit stripped clones), (3)
-batch N functions per process — blocked on the lifter's exit(-1)
-error style, which would need to become recoverable first. Process
-isolation itself is worth keeping (crash/timeout containment).
-llvm-reduce interestingness tests inherit all of this per probe.
+Fixes landed (scripts/corpus_run.py, m4-sweep.sh):
+1. workers default 8 → cores-4 (=12 here): fresh sweep 13 min → 8:19.
+2. record-reuse cache keyed on (bpf-tv sha, .ll sha, fn, smt-to,
+   flags), `--reuse baseline.jsonl` / `REUSE=1 m4-sweep.sh`: same-
+   binary re-sweep 8:19 → 43s.
+3. compile stamps (clang sha + .c sha + flags): warm incremental
+   sweep → **14s**, byte-identical outcome table.
+
+Not done (and why): reusing failed-to-prove records across BINARY
+changes would cut fresh iteration sweeps to ~3 min but hides exactly
+the improvements one iterates for — bucket-targeted reruns (the
+pattern used all day) cover that case honestly. Cutting smt-to loses
+real verified functions (43 verified take >3s, max 23s). Compile
+failures (286 files) are deliberately not stamped: the stamp key
+can't see header changes, and fast-fail recompiles cost ~10s/sweep.
+
+Determinism note: back-to-back identical sweeps differ by ±1 verified
+(solver-timeout jitter at the 10s boundary).
+
+The original (wrong) hypothesis for the record: "~1.4s/fn average ⇒
+~97% per-process overhead". The 1.4s average was mean-dragged by the
+ftp tail; the median function costs ~0.04s and overhead is a rounding
+error. Lesson: sum the budget by bucket before optimizing.
 
 ## Open threads
 
@@ -35,9 +50,12 @@ llvm-reduce interestingness tests inherit all of this per probe.
   diamond, @err stores, two kfunc acquire/release chains?).
   Counterexample has a poison ctx arg and "Mismatch in memory" after
   bpf_rcu_read_lock.
-- **ftp bucket @60s SMT**: measurement in flight (315 fns). Early
-  indication from spot checks: map-lookup stack-key shapes flip to
-  verified at 60s.
+- **ftp bucket @60s SMT**: measured. Of 315: only 48 verify (15%),
+  249 stay failed-to-prove, 16 timeout, 2 stack-escape. The bucket is
+  model-hard (quantified memory over helper-written blocks), NOT
+  solver budget — keep smt-to=10s default; a 60s record sweep would
+  buy +1.1pp coverage for ~6x ftp cost. The 48 are dominated by
+  split-stack map-lookup shapes.
 - **Downgraded stack-escape residual (80 fns)**: dominated by opaque
   callees *writing* through escaped stack pointers
   (bpf_get_func_arg/dynptr/iters). Next model idea if worth chasing:
