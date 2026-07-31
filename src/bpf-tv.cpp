@@ -18,6 +18,7 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -149,6 +150,32 @@ bool tryReplaceRoundTrip(llvm::IntToPtrInst *intToPtr) {
   return true;
 }
 
+/*
+ * remove empty-template void inline asm ("compiler barriers",
+ * asm volatile("" ::: "memory"), the pervasive barrier()/barrier_var
+ * macro family) from the SEMANTIC copy of the source. an empty
+ * template emits no instructions and a void call produces no values,
+ * so at runtime these are no-ops; they only constrain the optimizer.
+ * codegen runs on an unstripped clone, so the backend still sees them.
+ * see DECISIONS.md.
+ */
+void stripEmptyInlineAsm(
+    llvm::Function *fn,
+    std::unordered_map<unsigned, llvm::Instruction *> &lineMap) {
+  llvm::SmallVector<llvm::CallInst *, 8> dead;
+  for (auto &bb : *fn)
+    for (auto &i : bb)
+      if (auto *ci = dyn_cast<llvm::CallInst>(&i))
+        if (auto *ia =
+                dyn_cast<llvm::InlineAsm>(ci->getCalledOperand()))
+          if (ia->getAsmString().empty() && ci->getType()->isVoidTy())
+            dead.push_back(ci);
+  for (auto *ci : dead) {
+    std::erase_if(lineMap, [&](auto &kv) { return kv.second == ci; });
+    ci->eraseFromParent();
+  }
+}
+
 // find and collapse sequences of the form ptrToInt, add, intToPtr
 // into a single GEP instruction
 void tryReplacePtrtoInt(llvm::Function *fn) {
@@ -179,8 +206,6 @@ void doit(llvm::Module *srcModule, llvm::Function *srcFn, Verifier &verifier,
   }
 
   {
-    // let's not even bother if Alive2 can't process our function
-
     auto Pred = [](unsigned MDKind, llvm::MDNode *Node) {
       return MDKind == llvm::LLVMContext::MD_alias_scope ||
              MDKind == llvm::LLVMContext::MD_noalias ||
@@ -189,12 +214,6 @@ void doit(llvm::Module *srcModule, llvm::Function *srcFn, Verifier &verifier,
     for (auto &bb : *srcFn)
       for (auto &i : bb)
         i.eraseMetadataIf(Pred);
-
-    auto fn = llvm2alive(*srcFn, TLI.getTLI(*srcFn), /*isSrc=*/true);
-    if (!fn) {
-      *out << "Fatal error, exiting\n";
-      exit(-1);
-    }
   }
 
   // nuke the rest of the functions in the module -- no need to
@@ -216,7 +235,25 @@ void doit(llvm::Module *srcModule, llvm::Function *srcFn, Verifier &verifier,
   std::unordered_map<unsigned, llvm::Instruction *> lineMap;
   if (opt_asm_input == "") {
     lifter::addDebugInfo(srcFn, lineMap);
-    AsmBuffer = lifter::generateAsm(*srcModule, Targ, DefaultTT,
+    // codegen must see the module unmodified (compiler barriers affect
+    // scheduling and layout); clone it before stripping the semantic
+    // copy that the refinement check consumes
+    auto CodegenM = llvm::CloneModule(*srcModule);
+    stripEmptyInlineAsm(srcFn, lineMap);
+
+    // pre-flight the stripped source through Alive2 BEFORE running the
+    // backend: inputs Alive2 can't process anyway (atomics, remaining
+    // inline asm, ...) can drive codegen into report_fatal_error
+    // aborts, and there is no point compiling what we cannot verify
+    {
+      auto fn = llvm2alive(*srcFn, TLI.getTLI(*srcFn), /*isSrc=*/true);
+      if (!fn) {
+        *out << "Fatal error, exiting\n";
+        exit(-1);
+      }
+    }
+
+    AsmBuffer = lifter::generateAsm(*CodegenM, Targ, DefaultTT,
                                     DefaultCPU.c_str(), DefaultFeatures);
     if (!AsmBuffer) {
       *out << "\nERROR: BPF backend reported an error lowering this "
@@ -224,9 +261,11 @@ void doit(llvm::Module *srcModule, llvm::Function *srcFn, Verifier &verifier,
       exit(-1);
     }
   } else {
+    stripEmptyInlineAsm(srcFn, lineMap);
     AsmBuffer = ExitOnErr(
         llvm::errorOrToExpected(llvm::MemoryBuffer::getFile(opt_asm_input)));
   }
+
 
   if (opt_asm_output != "") {
     std::ofstream asm_file(opt_asm_output);

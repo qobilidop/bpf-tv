@@ -234,6 +234,28 @@ semantics.
 textual asm to captured MCInsts (planned M3 direction) — then delete the
 rewrite.
 
+## 2026-07-30 — Empty inline asm stripped from the semantic side only
+
+**Context:** `asm volatile("" ::: "memory")` — the `barrier()` /
+`barrier_var` macro family — is pervasive in real BPF code and was v0's
+biggest single coverage exclusion. An empty template emits no
+instructions and a void call produces no values: at runtime it is a
+no-op; it exists only to constrain the optimizer.
+
+**Decision:** the driver strips empty-template void inline asm from the
+copy of the source used for refinement, while codegen runs on an
+unstripped clone (barriers affect scheduling/layout, and the whole point
+is to validate what the backend does *with* them). Non-empty templates
+and value-producing asm remain rejected.
+
+**Ordering lesson (cost of getting it wrong: 9 crashes):** the Alive2
+pre-flight check must run *between* stripping and codegen — inputs
+Alive2 rejects anyway (atomics, remaining asm) can drive the backend
+into `report_fatal_error` aborts if compiled first.
+
+**Revisit when:** adding `barrier_var` (empty template with tied "+r"
+operands — an identity function, modelable the same way).
+
 ## 2026-07-30 — (see DESIGN.md) substrate, pins, EXTERNAL_PROJECTS
 
 The larger decisions — official alive2 + vendored plumbing instead of the

@@ -927,6 +927,12 @@ void bpf2llvm::lift(MCInst &I) {
   }
 
   case BPF::JAL:
+    if (!CurInst->getOperand(0).isExpr()) {
+      // "call N" -- a helper referenced by number (only reachable via
+      // asm input or non-empty inline asm); no symbol to resolve
+      *out << "\nERROR: calls to helpers by number are not supported\n\n";
+      exit(-1);
+    }
     doDirectCall();
     break;
 
