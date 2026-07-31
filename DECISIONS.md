@@ -314,3 +314,18 @@ The larger decisions — official alive2 + vendored plumbing instead of the
 arm-tv fork, the three-way pin triple and its bump recipe, consuming alive2
 via its `EXTERNAL_PROJECTS` hook — are recorded with rationale in
 [DESIGN.md](DESIGN.md).
+
+## 2026-07-31 — linux corpus is script-pinned, not a submodule
+
+**Context:** M4 needs the kernel selftests (`tools/testing/selftests/bpf`,
+1009 prog files at linux `8ba098e6b6ff`). Even a blob-filtered submodule
+clone of linux carries gigabytes of history for every fresh checkout.
+
+**Decision:** the one exception to the pin-as-submodule policy:
+`scripts/fetch-linux-corpus.sh` pins the exact SHA and does a depth-1
+sparse checkout (~200 MB) into gitignored `third_party/linux/`.
+`third_party/vendored/vmlinux.h` (libbpf/vmlinux.h, x86 6.19) is
+committed directly — small enough to vendor.
+
+**Revisit when:** git submodule gains usable shallow+sparse support, or
+the corpus needs to move in lockstep with other pins.
