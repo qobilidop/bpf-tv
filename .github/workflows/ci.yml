@@ -6,9 +6,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+# PR pushes cancel superseded runs; main pushes QUEUE instead --
+# cancelling a main run mid-LLVM-build discards the dependency cache
+# (actions/cache saves only on success), so cancellation on main
+# creates a never-priming cache treadmill
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   build-and-test:
