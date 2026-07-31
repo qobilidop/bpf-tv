@@ -1,0 +1,13 @@
+{
+  "name": "bpf-tv",
+  "build": { "dockerfile": "Dockerfile" },
+  "containerEnv": {
+    "BUILD_ROOT": "${containerWorkspaceFolder}/build-linux"
+  },
+  "postCreateCommand": "git submodule update --init --depth 1",
+  "customizations": {
+    "vscode": {
+      "extensions": ["llvm-vs-code-extensions.vscode-clangd"]
+    }
+  }
+}
