@@ -62,9 +62,29 @@ K2's corpus, bpf_conformance as executable spec)
   lifted. Report: docs/eval/2026-07-30-conformance.md. Queued: helper
   IDs, bpf2bpf, uBPF/rbpf as extra oracles, boost in devcontainer for
   CI wiring.
-- **M4 — real-world coverage** (after M3): kernel selftests + Cilium `.o`s
-  (K2's corpus); needs a BPF-targeting clang. Headline: inline-asm / CO-RE
-  rejection rate on production code.
+- **M4 — real-world coverage** ✅ first measurement (2026-07-31): kernel
+  selftests (linux 8ba098e6, 4316 functions via pinned clang) — 13.9%
+  verified, median 0.03s; caps measured: inline asm 40.2% (mostly the
+  `__naked` verifier_* idiom, out of scope by nature), maps 14%,
+  helpers-by-number 334 fns. False alarms burned down 20 → 5 (all one
+  documented class). Report:
+  docs/eval/2026-07-31-m4-kernel-selftests.md. Remaining for M4: Cilium
+  `.o` corpus (second real-world datapoint), container-mode `-nostdinc`.
+
+## Next up (in order)
+
+1. **Helpers by number** — synthesize per-ID external declarations in
+   both modules, route through the existing uninterpreted-call path.
+   Unlocks 334 selftest functions AND the last 3 conformance tests
+   (312/312 = production-runtime parity).
+2. **`barrier_var` passthrough** — empty template with tied `"+r"`
+   operands is an identity function; largest recoverable slice of the
+   inline-asm bucket.
+3. **Maps design** (checkpoint-worthy discussion first) — `.maps`
+   globals are 14% of selftest functions; K2-style distinguished
+   blocks per the design doc.
+4. Cilium corpus; `-cpu v4` sweep (converts the backend-error bucket);
+   per-object stack blocks (retires the last false-alarm class).
 - **M5 — fuzzing** (later): Csmith integer subset, once the feature filter
   passes most generated programs.
 
