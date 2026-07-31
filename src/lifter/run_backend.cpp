@@ -17,6 +17,7 @@
 #include "llvm/Transforms/Utils/Cloning.h"
 
 #include <cassert>
+#include <regex>
 #include <iostream>
 #include <memory>
 
@@ -102,5 +103,19 @@ unique_ptr<MemoryBuffer> lifter::generateAsm(Module &M, const Target *Targ,
   Ctx.setDiagnosticHandler(std::move(oldHandler));
   if (hadError)
     return nullptr;
-  return MemoryBuffer::getMemBuffer(Asm.c_str());
+
+  /*
+   * LLVM's BPF asm printer emits MOV_32_64 (zext of a w register into
+   * an r register) as "rN = wM", which LLVM's own BPF asm parser
+   * rejects -- a printer/parser round-trip hole (as of the pinned
+   * LLVM, 2026-05). At the encoding level MOV_32_64 is the same
+   * machine instruction as the 32-bit register move (0xbc, BPF_ALU |
+   * BPF_MOV | BPF_X), whose ISA semantics zero the upper 32 bits, so
+   * rewriting "rN = wM" to "wN = wM" is a byte-level identity on the
+   * emitted code. See DECISIONS.md.
+   */
+  std::string text = Asm.str().str();
+  std::regex mov3264(R"((^|\n)(\s*)r([0-9]|10) = (w[0-9]+)\b)");
+  text = std::regex_replace(text, mov3264, "$1$2w$3 = $4");
+  return MemoryBuffer::getMemBufferCopy(text);
 }
