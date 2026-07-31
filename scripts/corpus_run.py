@@ -107,8 +107,9 @@ def classify(rc: int, out: str, timed_out: bool):
     return "other", f"rc={rc}"
 
 
-def run_one(bpf_tv, ll, fn, smt_to, wall_cap):
-    cmd = [str(bpf_tv), f"--fn={fn}", f"--smt-to={smt_to}", str(ll)]
+def run_one(bpf_tv, ll, fn, smt_to, wall_cap, extra_args=()):
+    cmd = [str(bpf_tv), f"--fn={fn}", f"--smt-to={smt_to}",
+           *extra_args, str(ll)]
     start = time.monotonic()
     timed_out = False
     try:
@@ -146,6 +147,8 @@ def main():
     ap.add_argument("--recursive", action="store_true")
     ap.add_argument("--out", type=pathlib.Path, default=None,
                     help="output directory (default: build/eval)")
+    ap.add_argument("--extra-arg", action="append", default=[],
+                    help="extra bpf-tv flag (repeatable)")
     args = ap.parse_args()
 
     outdir = args.out or pathlib.Path("build/eval")
@@ -177,7 +180,8 @@ def main():
     done = 0
     with concurrent.futures.ThreadPoolExecutor(args.jobs) as ex:
         futs = {ex.submit(run_one, args.bpf_tv, ll, fn,
-                          args.smt_to, args.wall_cap): (ll, fn)
+                          args.smt_to, args.wall_cap,
+                          tuple(args.extra_arg)): (ll, fn)
                 for ll, fn in work}
         for fut in concurrent.futures.as_completed(futs):
             records.append(fut.result())
