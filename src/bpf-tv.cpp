@@ -235,6 +235,13 @@ built on Alive2 version )EOF";
   // general
   config::tgt_is_asm = true;
 
+  // undef inputs put doubly-quantified terms in the refinement query
+  // that make Z3 diverge even on trivial functions (measured: a
+  // two-register add whose operands get commuted by -O3 goes from
+  // unprovable-in-120s to 16ms). undef is on its way out of LLVM
+  // anyway, so bpf-tv always runs with undef inputs disabled.
+  config::disable_undef_input = true;
+
   DefaultTT = llvm::Triple("bpfel-unknown-unknown");
   DefaultDL = DefaultTT.computeDataLayout();
   DefaultCPU = opt_cpu;
