@@ -67,6 +67,25 @@ kinds on all lifted calls after optimization — strictly
 behavior-enlarging, so sound; 7 of our 9 false alarms became genuine
 verifications. arm-tv/riscv-tv would likely see the same coverage gain.
 
+## Third finding (2026-07-30, code study): call-input pointer refinement asymmetry
+
+`Pointer::fninputRefined` (ir/pointer.cpp) keeps an asm-mode-only
+`isLogical() == other.isLogical()` conjunct that `Pointer::refined`
+(return values) already dropped in the #1133/#1153 fixes. Since `-O3`
+never folds `ptrtoint→add→inttoptr` chains and the branch's
+`-run-replace-ptrtoint` mitigation is off by default, every SP-relative
+pointer argument to a call reaches refinement as a *physical* pointer,
+fails the conjunct against the source's logical alloca pointer, and
+produces "source is more defined than target / function did not
+return". The `toLogicalLocal` + `at_least_same_offseting` machinery the
+conjunct guards already handles the big-frame-vs-small-alloca case, so
+the conjunct appears to be a leftover; removing it (mirroring
+#1133/#1153) is a one-line experiment with clear precedent. Related
+documented gaps worth raising in the same conversation: callee writes
+to escaped local blocks are unmodeled (memory.cpp TODOs, issue #969) —
+a bug-missing window for helper-writes-to-stack miscompiles in all
+backend-tv-family tools.
+
 ## Before sending — confidence checklist
 
 - [ ] Reproduce against riscv-tv itself: plant an equivalent bug in the

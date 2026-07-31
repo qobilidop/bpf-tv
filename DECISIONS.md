@@ -120,13 +120,31 @@ rejection is removed.
 **Measured:** 7 of the 9 former INCORRECTs now genuinely verify; corpus
 verified 196 → 204; `pr57872` is a slow-but-honest failed-to-prove.
 
-**Genuine residual (1 corpus function, `simplifycfg.ll`):** an opaque
-callee that *writes a pointer through* an escaped slot could, in the
-single-block lifted stack, produce a pointer aliasing sibling stack
-data — impossible with the source's per-alloca blocks. Not statically
-detectable with opaque pointers; documented as the one known false-alarm
-class instead of rejected. Proper fix would need block-granular stack
-modeling or callee-behavior axioms (see the arm-tv ABI-axiom study).
+**Genuine residual (1 corpus function, `simplifycfg.ll`):** cause not
+yet root-diagnosed. The arm-tv/Alive2 study (2026-07-30) corrected an
+earlier mis-attribution: Alive2 does NOT model callee access to local
+blocks at all (`ir/memory.cpp` TODOs: "missing refinement of escaped
+local blocks", "handle havoc of local blocks"), so "callee could alias
+sibling stack data" is not something the encoding can even observe.
+`simplifycfg.ll` exercises a callee *writing through* an escaped slot —
+exactly the unmodeled dimension — and needs its own bisection.
+
+**Inherited soundness caveat (from the same study, worth its own line):**
+because callee writes to escaped local blocks are unmodeled, refinement
+can MISS miscompiles in which the backend mis-lays-out stack data that a
+helper writes. This affects arm-tv/riscv-tv equally; upstream knows
+(open TODOs, issue #969). Log as a documented bug-missing window
+alongside the (now-closed) freeze-refinement one.
+
+**Upstream context (same study):** the exact fi_ri-class mechanism at
+the Alive2 level is the asm-mode-only `isLogical() == other.isLogical()`
+conjunct in `Pointer::fninputRefined` — an asymmetry with return-value
+refinement, where AliveToolkit#1133/#1153 already removed it. Physical
+(inttoptr) call args hit it; our default-on ptr-int collapse turns args
+logical, dodging it — upstream's equivalent pass is off by default, and
+`-O3` never folds `ptrtoint→add→inttoptr` itself. A one-line upstream
+experiment (drop the conjunct) has clear precedent and is queued for the
+drafts.
 
 ## 2026-07-30 — [superseded] Escaping-stack-pointer false alarms: rejected up front (option b)
 
