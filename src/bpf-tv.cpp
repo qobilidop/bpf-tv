@@ -12,6 +12,7 @@
 #include "tools/transform.h"
 #include "util/version.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
@@ -23,6 +24,7 @@
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Verifier.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/InitLLVM.h"
@@ -31,6 +33,8 @@
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 
+#include <bit>
+#include <functional>
 #include <fstream>
 #include <iostream>
 #include <utility>
@@ -308,6 +312,290 @@ void tryReplacePtrtoInt(llvm::Function *fn) {
   }
 }
 
+/*
+ * per-object stack blocks (see DECISIONS.md): the lifter models the
+ * whole BPF frame as one block, which Alive2's per-block call-input
+ * matching cannot reconcile with a source function whose stack
+ * objects (allocas) escape to callees -- the source has one local
+ * block per alloca. Using the backend's own frame layout (StackSlot,
+ * from MachineFrameInfo), carve the alloca-backed slots out of the
+ * lifted stack block into per-object allocas so the block structures
+ * match.
+ *
+ * runs on the lifted function AFTER -O3 and the ptrtoint-roundtrip
+ * collapse, where frame addresses appear in two shapes:
+ *   gep i8, %stack, C                      (loads/stores; C constant)
+ *   inttoptr(add(ptrtoint(gep %stack, 1024), -K))   (escaping call
+ *     args; the multi-use ptrtoint defeats the roundtrip collapse)
+ * derived pointers (nested geps, ptrtoint of a rewritten gep) follow
+ * automatically since only DIRECT users of the stack block move.
+ *
+ * ALL-OR-NOTHING: a partial split is the one unsound shape (an
+ * unattributed access could touch a split object's bytes in the
+ * machine but miss its block in the model, hiding a real clobber), so
+ * any unclassifiable use aborts the whole rewrite and the faithful
+ * single-block model stays in effect. attributed-but-dynamically-OOB
+ * accesses only make the model MORE undefined than the machine, which
+ * biases toward refinement failure, never silent acceptance.
+ */
+bool rewriteStackObjects(llvm::Function *F2,
+                         const std::vector<lifter::StackSlot> &slots,
+                         std::ostream *log) {
+  if (slots.empty())
+    return true;
+
+  // the lifted stack block: the lifter's myalloc call, usually
+  // promoted to a plain alloca named "stack..." by -O3
+  llvm::Value *stackMem = nullptr;
+  for (auto &i : F2->getEntryBlock()) {
+    if (auto *ai = dyn_cast<llvm::AllocaInst>(&i)) {
+      if (ai->getName().starts_with("stack")) {
+        stackMem = ai;
+        break;
+      }
+    }
+    if (auto *ci = dyn_cast<llvm::CallInst>(&i)) {
+      auto *callee = ci->getCalledFunction();
+      if (callee && callee->getName() == "myalloc" &&
+          ci->getName().starts_with("stack")) {
+        stackMem = ci;
+        break;
+      }
+    }
+  }
+  if (!stackMem)
+    return true; // no stack block at all (fully optimized away)
+
+  const int64_t base = lifter::StackFrameTopOffset; // r10's byte offset
+  auto &DL = F2->getParent()->getDataLayout();
+  auto &Ctx = F2->getContext();
+  auto *i8 = llvm::Type::getInt8Ty(Ctx);
+  auto *i64 = llvm::Type::getInt64Ty(Ctx);
+
+  // slot lookup by stack-block byte offset
+  auto slotAt = [&](int64_t c) -> const lifter::StackSlot * {
+    for (auto &s : slots)
+      if (c >= base + s.offset && c < base + s.offset + (int64_t)s.size)
+        return &s;
+    return nullptr;
+  };
+
+  // classification plans; applied only if every use classifies
+  struct GepPlan {
+    llvm::GetElementPtrInst *gep;
+    const lifter::StackSlot *slot; // null = residual, keep
+    int64_t rel;                   // offset within the object
+    llvm::Value *varIdx;           // extra variable index (may be null)
+  };
+  struct IntPlan {
+    llvm::Instruction *inst; // the add (or ptrtoint) producing the address
+    const lifter::StackSlot *slot;
+    int64_t rel;
+  };
+  std::vector<GepPlan> gepPlans;
+  std::vector<IntPlan> intPlans;
+
+  auto bail = [&](const char *why, const llvm::Value *v) {
+    std::string sss;
+    llvm::raw_string_ostream ss(sss);
+    if (v)
+      v->print(ss);
+    *log << "per-object stack rewrite: cannot classify (" << why << "): "
+         << sss << "\n";
+    return false;
+  };
+
+  // forward declarations for the mutually recursive classifiers
+  std::function<bool(llvm::Value *, int64_t)> classifyPtr;
+  std::function<bool(llvm::Instruction *, int64_t)> classifyIntUses;
+
+  /*
+   * classify every use of a pointer known to be stack-block byte
+   * offset c, where c is NOT inside any slot (slot-addressed geps get
+   * planned for replacement instead and their users simply follow the
+   * new pointer). loads/stores/call-args through a residual pointer
+   * are precise; derived geps re-enter classification (constant
+   * offsets may land in a slot -> plan; variable offsets must be
+   * attributable to a slot by their constant base); ptrtoint hands
+   * off to the integer classifier. anything else bails.
+   */
+  classifyPtr = [&](llvm::Value *p, int64_t c) -> bool {
+    for (auto *u : p->users()) {
+      if (auto *gep = dyn_cast<llvm::GetElementPtrInst>(u)) {
+        llvm::APInt off(64, 0);
+        if (gep->accumulateConstantOffset(DL, off)) {
+          int64_t total = c + off.getSExtValue();
+          if (auto *s = slotAt(total)) {
+            gepPlans.push_back({gep, s, total - (base + s->offset), nullptr});
+            continue;
+          }
+          if (!classifyPtr(gep, total))
+            return false;
+          continue;
+        }
+        // variable index: only the canonical single-index i8 shape,
+        // attributed to a slot by its constant base
+        if (gep->getNumIndices() != 1 || gep->getSourceElementType() != i8)
+          return bail("non-canonical variable-index gep", gep);
+        auto *idx = gep->getOperand(1);
+        llvm::Value *var = nullptr;
+        llvm::ConstantInt *k = nullptr;
+        if (auto *bo = dyn_cast<llvm::BinaryOperator>(idx)) {
+          if (bo->getOpcode() == llvm::Instruction::Add) {
+            k = dyn_cast<llvm::ConstantInt>(bo->getOperand(1));
+            var = bo->getOperand(0);
+            if (!k) {
+              k = dyn_cast<llvm::ConstantInt>(bo->getOperand(0));
+              var = bo->getOperand(1);
+            }
+          }
+        }
+        if (!k)
+          return bail("variable-index gep without constant base", gep);
+        int64_t total = c + k->getSExtValue();
+        auto *s = slotAt(total);
+        if (!s)
+          return bail("variable-index gep base outside slots", gep);
+        gepPlans.push_back({gep, s, total - (base + s->offset), var});
+        continue;
+      }
+      if (auto *pti = dyn_cast<llvm::PtrToIntInst>(u)) {
+        if (!classifyIntUses(pti, c))
+          return false;
+        continue;
+      }
+      if (isa<llvm::LoadInst>(u)) {
+        if (slotAt(c))
+          return bail("direct access at a slot-covered base", u);
+        continue;
+      }
+      if (auto *si = dyn_cast<llvm::StoreInst>(u)) {
+        if (si->getPointerOperand() == p && !slotAt(c))
+          continue;
+        return bail("residual frame pointer stored as data", si);
+      }
+      if (isa<llvm::CallBase>(u))
+        continue; // residual escape: block matching handles (or fails safely)
+      if (isa<llvm::ICmpInst>(u))
+        continue;
+      return bail("residual pointer user", u);
+    }
+    return true;
+  };
+
+  /*
+   * classify the integer uses of a frame address known to be
+   * stack-block offset c (from ptrtoint): adds with a constant give a
+   * concrete address (slot -> plan; residual -> its inttoptr results
+   * re-enter pointer classification); icmp is address comparison
+   * (harmless); anything else is untrackable integer flow.
+   */
+  classifyIntUses = [&](llvm::Instruction *pti, int64_t c) -> bool {
+    auto classifyAddr = [&](llvm::Instruction *inst, int64_t total) -> bool {
+      if (auto *s = slotAt(total)) {
+        intPlans.push_back({inst, s, total - (base + s->offset)});
+        return true;
+      }
+      // residual constant address: integer users must be inttoptr
+      // (whose pointer re-enters classification) or icmp;
+      // storing/re-deriving it could reach a slot untracked
+      if (auto *itp = dyn_cast<llvm::IntToPtrInst>(inst))
+        return classifyPtr(itp, total);
+      for (auto *u : inst->users()) {
+        if (auto *itp = dyn_cast<llvm::IntToPtrInst>(u)) {
+          if (!classifyPtr(itp, total))
+            return false;
+          continue;
+        }
+        if (isa<llvm::ICmpInst>(u))
+          continue;
+        return bail("residual integer address user", u);
+      }
+      return true;
+    };
+    for (auto *u : pti->users()) {
+      if (auto *bo = dyn_cast<llvm::BinaryOperator>(u)) {
+        if (bo->getOpcode() != llvm::Instruction::Add)
+          return bail("non-add arithmetic on frame address", bo);
+        auto *k = dyn_cast<llvm::ConstantInt>(bo->getOperand(1));
+        if (!k)
+          k = dyn_cast<llvm::ConstantInt>(bo->getOperand(0));
+        if (!k)
+          return bail("add of frame address with non-constant", bo);
+        if (!classifyAddr(bo, c + k->getSExtValue()))
+          return false;
+        continue;
+      }
+      if (auto *itp = dyn_cast<llvm::IntToPtrInst>(u)) {
+        if (!classifyAddr(itp, c))
+          return false;
+        continue;
+      }
+      if (isa<llvm::ICmpInst>(u))
+        continue;
+      return bail("frame-address integer user", u);
+    }
+    return true;
+  };
+
+  if (!classifyPtr(stackMem, 0))
+    return false;
+
+  // apply: one alloca per referenced slot. alignment is what the
+  // machine guarantees for that offset within the 16-aligned frame
+  // (O3 has already stamped that alignment on accesses), never less
+  // than the slot's own.
+  llvm::DenseMap<const lifter::StackSlot *, llvm::AllocaInst *> objs;
+  auto objFor = [&](const lifter::StackSlot *s) -> llvm::AllocaInst * {
+    auto &obj = objs[s];
+    if (!obj) {
+      uint64_t frameAlign =
+          1ull << std::min(std::countr_zero<uint64_t>(base + s->offset), 4);
+      obj = new llvm::AllocaInst(
+          i8, 0, llvm::ConstantInt::get(i64, s->size),
+          llvm::Align(std::max<uint64_t>(s->align, frameAlign)),
+          "bpftv_stkobj", F2->getEntryBlock().getFirstInsertionPt());
+    }
+    return obj;
+  };
+
+  for (auto &p : gepPlans) {
+    if (!p.slot)
+      continue;
+    llvm::IRBuilder<> B(p.gep);
+    llvm::Value *idx = B.getInt64(p.rel);
+    if (p.varIdx)
+      idx = B.CreateAdd(p.varIdx, idx);
+    auto *np = B.CreateGEP(i8, objFor(p.slot), {idx});
+    p.gep->replaceAllUsesWith(np);
+    p.gep->eraseFromParent();
+  }
+  for (auto &p : intPlans) {
+    llvm::IRBuilder<> B(p.inst);
+    auto *np = B.CreateGEP(i8, objFor(p.slot), {B.getInt64(p.rel)});
+    if (isa<llvm::IntToPtrInst>(p.inst)) {
+      p.inst->replaceAllUsesWith(np);
+    } else {
+      // integer frame address (escapes into stores/other flow): keep
+      // it an integer but give it the object's provenance; fold any
+      // direct inttoptr users back to the pointer
+      auto *ni = B.CreatePtrToInt(np, i64);
+      for (auto *iu : llvm::make_early_inc_range(p.inst->users())) {
+        if (auto *itp = dyn_cast<llvm::IntToPtrInst>(iu)) {
+          itp->replaceAllUsesWith(np);
+          itp->eraseFromParent();
+        }
+      }
+      p.inst->replaceAllUsesWith(ni);
+    }
+    p.inst->eraseFromParent();
+  }
+
+  *log << "per-object stack rewrite: split " << objs.size() << " of "
+       << slots.size() << " frame slots\n";
+  return true;
+}
+
 void doit(llvm::Module *srcModule, llvm::Function *srcFn, Verifier &verifier,
           llvm::TargetLibraryInfoWrapperPass &TLI) {
 
@@ -363,6 +651,7 @@ void doit(llvm::Module *srcModule, llvm::Function *srcFn, Verifier &verifier,
 
   unique_ptr<llvm::MemoryBuffer> AsmBuffer;
   std::unordered_map<unsigned, llvm::Instruction *> lineMap;
+  std::vector<lifter::StackSlot> stackSlots;
   if (opt_asm_input == "") {
     lifter::addDebugInfo(srcFn, lineMap);
     // codegen must see the module unmodified (compiler barriers affect
@@ -386,7 +675,8 @@ void doit(llvm::Module *srcModule, llvm::Function *srcFn, Verifier &verifier,
     }
 
     AsmBuffer = lifter::generateAsm(*CodegenM, Targ, DefaultTT,
-                                    DefaultCPU.c_str(), DefaultFeatures);
+                                    DefaultCPU.c_str(), DefaultFeatures,
+                                    &stackSlots);
     if (!AsmBuffer) {
       *out << "\nERROR: BPF backend reported an error lowering this "
               "function (see stderr); no code to validate\n\n";
@@ -421,7 +711,8 @@ void doit(llvm::Module *srcModule, llvm::Function *srcFn, Verifier &verifier,
 
   auto [F1, F2] = lifter::liftFunc(srcFn, std::move(AsmBuffer), lineMap,
                                    opt_optimize_tgt, out, Targ, DefaultTT,
-                                   DefaultCPU.c_str(), DefaultFeatures);
+                                   DefaultCPU.c_str(), DefaultFeatures,
+                                   &stackSlots);
 
   if (save_lifted_ir) {
     std::filesystem::path p{(string)opt_file};
@@ -434,8 +725,57 @@ void doit(llvm::Module *srcModule, llvm::Function *srcFn, Verifier &verifier,
   if (run_replace_ptrtoint)
     tryReplacePtrtoInt(F2);
 
-  if (!opt_skip_verification)
+  if (!rewriteStackObjects(F2, stackSlots, out)) {
+    // the rewrite had to bail; multi-escape functions were admitted by
+    // checkFuncSupport only on the promise of the split, so re-impose
+    // the single-block-model rejection here rather than emit a false
+    // INCORRECT
+    if (lifter::escapingStackObjects(*F1).size() > 1 &&
+        !lifter::stackEscapeAllowed()) {
+      *out << "\nERROR: multiple stack objects escape to callees and the "
+              "per-object stack rewrite could not attribute every frame "
+              "access; the lifted single-block stack model cannot match "
+              "them (known limitation)\n\n";
+      exit(-1);
+    }
+    *out << "per-object stack rewrite bailed; keeping the single-block "
+            "stack model\n";
+  }
+
+  {
+    std::string sss;
+    llvm::raw_string_ostream ss(sss);
+    if (llvm::verifyModule(*F2->getParent(), &ss)) {
+      *out << sss;
+      *out << "\nERROR: Lifted module is broken, this should not happen\n";
+      exit(-1);
+    }
+  }
+
+  if (!opt_skip_verification) {
+    auto unsoundBefore = verifier.num_unsound;
     verifier.compareFunctions(*F1, *F2);
+    /*
+     * a multi-escape function only got past checkFuncSupport's
+     * rejection on the promise of the per-object split; when
+     * refinement STILL fails as unsound, the remaining model gaps in
+     * this class (opaque callees writing through escaped stack
+     * pointers, pointer bytes through integer registers, ...) make
+     * the verdict untrustworthy as a miscompilation claim -- report
+     * the known limitation instead. real miscompiles in this class
+     * remain masked exactly as they were when every multi-escape
+     * function was rejected up front; the split's gain is the
+     * functions that now VERIFY.
+     */
+    if (verifier.num_unsound > unsoundBefore &&
+        lifter::escapingStackObjects(*F1).size() > 1 &&
+        !lifter::stackEscapeAllowed()) {
+      *out << "\nERROR: refinement failed under the per-object stack "
+              "model for a function with multiple stack objects that "
+              "escape to callees (known limitation)\n\n";
+      exit(-1);
+    }
+  }
 
   *out << "done comparing functions\n";
   out->flush();

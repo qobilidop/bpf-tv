@@ -50,6 +50,8 @@ ERROR_BUCKETS = [
     ("arrays in return", "unsupported:aggregate"),
     ("Stack frame too large", "unsupported:stack-size"),
     ("escapes to a callee", "unsupported:stack-escape"),
+    ("escape to callees", "unsupported:stack-escape"),
+    ("cannot preserve pointer bytes", "unsupported:ptr-bytes"),
     ("thread_local not supported", "unsupported:thread-local"),
     ("volatiles not supported", "unsupported:volatile"),
     ("only static allocas", "unsupported:dynamic-alloca"),

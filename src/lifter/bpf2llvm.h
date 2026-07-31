@@ -102,11 +102,17 @@ class bpf2llvm final : public mc2llvm {
   // set by runBytes: no source module to resolve helper calls against
   bool bytesMode{false};
 
+  // frame slots from generateAsm (may be null); when they cover every
+  // escaping alloca, checkFuncSupport admits multi-escape functions
+  // on the promise of the driver's per-object stack rewrite
+  const std::vector<StackSlot> *frameSlots{nullptr};
+
 public:
   bpf2llvm(llvm::Function *srcFn, std::unique_ptr<llvm::MemoryBuffer> MB,
            std::unordered_map<unsigned, llvm::Instruction *> &lineMap,
            std::ostream *out, const llvm::Target *Targ, llvm::Triple DefaultTT,
-           const char *DefaultCPU, const char *DefaultFeatures);
+           const char *DefaultCPU, const char *DefaultFeatures,
+           const std::vector<StackSlot> *slots = nullptr);
 
   /*
    * bytes-mode entry: disassemble raw BPF bytecode (e.g. from the

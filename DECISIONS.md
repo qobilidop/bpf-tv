@@ -487,3 +487,84 @@ the case for per-object stack blocks (queued).
 **Revisit when:** v1 CO-RE lands, or per-object stack blocks retire
 the escaping-stack class, or map-specific facts (distinct maps'
 values don't alias) are needed to discharge failed-to-proves.
+
+## 2026-07-31 — Per-object stack blocks (retiring the escaping-stack false-alarm class)
+
+**Context:** the lifted target modeled the whole BPF frame as ONE
+block while the source has one local block per alloca; Alive2's
+per-block call-input matching cannot reconcile them once stack objects
+escape to callees. This produced the project's entire INCORRECT
+false-alarm population (31 functions after maps landed) plus the
+multi-escape static rejection. Shared with the arm-tv/riscv-tv
+reference, which never solved it.
+
+**Decision — three pieces:**
+
+1. **Layout extraction** (`generateAsm`): read the backend's own
+   finalized frame layout from MachineFrameInfo — every alloca-backed
+   slot's r10-relative offset (exactly what eliminateFrameIndex bakes
+   into the instruction stream), size, alignment, and originating
+   alloca (via its addDebugInfo line). Requires keeping
+   MachineFunctions alive past codegen, so generateAsm now replicates
+   addPassesToEmitFile minus its trailing FreeMachineFunctionPass.
+
+2. **Post-lift rewrite** (`rewriteStackObjects`, driver): after -O3 +
+   roundtrip collapse, classify every stack-block-derived
+   pointer/integer flow and carve the alloca-backed slots into
+   per-object allocas. Observed shapes: constant geps (loads/stores),
+   `inttoptr(add(ptrtoint(gep stack, 1024), -K))` (escaping call args
+   — the multi-use ptrtoint defeats the collapse), gep-of-gep chains
+   off the frame-top gep, and variable-index geps attributed by their
+   constant base. Derived pointers follow automatically because only
+   direct users move. **ALL-OR-NOTHING:** a partial split is the one
+   unsound shape (an unattributed access could clobber a split
+   object's bytes in the machine but miss its block in the model), so
+   any unclassifiable flow abandons the rewrite entirely and the
+   faithful single-block model stays. Attributed-but-dynamically-OOB
+   accesses only add UB to the model, which biases toward refinement
+   failure — never silent acceptance. Object alignment = what the
+   machine guarantees for that offset inside the 16-aligned frame
+   (O3 has already stamped it on accesses).
+
+3. **Static-check relaxation**: checkFuncSupport admits multi-escape
+   functions when every escaping alloca has a slot; the driver
+   re-imposes the rejection if the rewrite bails.
+
+**Collateral discovery — the pr57872 byte-kind class:** with the split
+making queries decisive, one CodeGen INCORRECT appeared: source
+memcpy's opaque (possibly pointer-carrying) memory into an escaping
+stack object; the lifted copy moves those bytes through integer
+registers, and pointer-bytes vs integer-bytes fail call-input
+matching. Measured: the identical shape with a pointer-free constant
+source verifies. Now rejected honestly (`unsupported:ptr-bytes`) when
+a ≥8-byte memcpy/memmove into an escaping alloca has a source not
+provably pointer-free. This function was never verified (previously
+failed-to-prove); the class predates the rewrite.
+
+**Measured:** the 31 INCORRECT → 18 verified + 12 failed-to-prove
+(solver-budget: e.g. the map-lookup stack-key shape verifies at 60s
+SMT) + 1 (`cpumask_failure` `test_global_mask_no_null_check`) — see
+sweep report. CodeGen corpus: 208 verified (was 207), 0 INCORRECT,
+pr57872 → ptr-bytes. e2e 15/15, conformance 310/312 unchanged.
+
+**Revisit when:** Alive2 grows native multi-block call-input matching,
+or the byte-kind (pointer bytes through integer registers) modeling
+improves upstream, or bailed shapes (phis over frame addresses, etc.)
+show up in corpora at scale.
+
+**Addendum (same day):** admitting multi-escape functions exposed a
+further residual population: 27 newly-admitted functions whose
+refinement fails even under a successful split (dominated by opaque
+callees that WRITE through escaped stack pointers -- bpf_get_func_arg
+/ dynptr / iters shapes). Since those verdicts are model gaps, not
+miscompilation evidence, the driver downgrades post-verification
+unsound results for multi-escape functions back to the known-
+limitation rejection: coverage gain stays (functions that verify),
+false INCORRECTs do not. A real miscompile in this class is masked
+exactly as it was when every multi-escape function was rejected up
+front -- no regression in detection power, and the e2e negative
+controls (no escaping allocas) are unaffected. The one INCORRECT this
+leaves in the selftest sweep (`cpumask_failure.ll`
+`test_global_mask_no_null_check`) is a distinct class: no allocas
+involved; a poison pointer argument reaches kfunc calls and memory
+mismatches after bpf_rcu_read_lock -- queued for its own triage.

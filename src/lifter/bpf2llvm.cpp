@@ -8,10 +8,13 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/MC/MCDisassembler/MCDisassembler.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/BinaryFormat/ELF.h"
 
+#include <algorithm>
+#include <functional>
 #include <cstdint>
 #include <map>
 #include <set>
@@ -33,9 +36,12 @@ bpf2llvm::bpf2llvm(Function *srcFn, unique_ptr<MemoryBuffer> MB,
                    std::unordered_map<unsigned, llvm::Instruction *> &lineMap,
                    std::ostream *out, const llvm::Target *Targ,
                    llvm::Triple DefaultTT, const char *DefaultCPU,
-                   const char *DefaultFeatures)
+                   const char *DefaultFeatures,
+                   const std::vector<StackSlot> *slots)
     : mc2llvm(srcFn, std::move(MB), lineMap, out, Targ, DefaultTT, DefaultCPU,
-              DefaultFeatures) {}
+              DefaultFeatures) {
+  frameSlots = slots;
+}
 
 unsigned bpf2llvm::branchInst() {
   return BPF::JMP;
@@ -439,6 +445,10 @@ static llvm::cl::opt<bool> optAllowStackEscape(
                    "failures (default=false)"),
     llvm::cl::init(false), llvm::cl::Hidden);
 
+bool lifter::stackEscapeAllowed() {
+  return optAllowStackEscape;
+}
+
 void bpf2llvm::checkFuncSupport(Function &func) {
   // MULTIPLE distinct stack objects escaping to callees is a genuine
   // limitation of the single-stack-block lifted model: the source has
@@ -447,32 +457,83 @@ void bpf2llvm::checkFuncSupport(Function &func) {
   // distinct source blocks onto the one target block. Minimized:
   // two allocas passed to callees (one call or two -- irrelevant)
   // fails; one alloca (any number of calls) verifies.
+  // EXCEPT: when the backend's frame layout (frameSlots) has a slot
+  // for every escaping alloca, the driver's per-object stack rewrite
+  // (rewriteStackObjects) will split the lifted frame into matching
+  // blocks -- admit the function and let the rewrite handle it; the
+  // driver re-checks and rejects if the rewrite has to bail.
   // See DECISIONS.md.
+  auto escaped = escapingStackObjects(func);
+
+  /*
+   * byte-wise lifted copies move data through integer registers and
+   * cannot preserve pointer BYTES: when a memcpy/memmove fills an
+   * ESCAPING stack object from memory that may itself hold pointers,
+   * call-input matching on the escaped block fails on the byte kind
+   * and produces a false INCORRECT (the pr57872 class; measured:
+   * the same shape with a pointer-free constant-global source
+   * verifies). copies shorter than a pointer cannot carry one and are
+   * fine; so are sources that provably hold no pointers. reject the
+   * rest honestly.
+   */
   if (!optAllowStackEscape) {
-    llvm::SmallPtrSet<const Value *, 8> escaped;
+    std::function<bool(Type *)> hasPtr = [&](Type *ty) -> bool {
+      if (ty->isPointerTy())
+        return true;
+      if (auto *st = dyn_cast<StructType>(ty))
+        return std::any_of(st->element_begin(), st->element_end(), hasPtr);
+      if (auto *at = dyn_cast<ArrayType>(ty))
+        return hasPtr(at->getElementType());
+      if (auto *vt = dyn_cast<VectorType>(ty))
+        return hasPtr(vt->getElementType());
+      return false;
+    };
     for (auto &bb : func) {
       for (auto &i : bb) {
-        auto *cb = dyn_cast<CallBase>(&i);
-        if (!cb)
+        auto *mt = dyn_cast<MemTransferInst>(&i);
+        if (!mt)
           continue;
-        auto *callee = cb->getCalledFunction();
-        if (callee && callee->isIntrinsic())
-          continue; // memcpy & friends are modeled precisely
-        for (auto &arg : cb->args()) {
-          if (!arg->getType()->isPointerTy())
+        if (!escaped.count(getUnderlyingObject(mt->getRawDest())))
+          continue;
+        if (auto *len = dyn_cast<ConstantInt>(mt->getLength()))
+          if (len->getZExtValue() < 8)
             continue;
-          const Value *obj = getUnderlyingObject(arg);
-          if (isa<AllocaInst>(obj))
-            escaped.insert(obj);
-        }
+        auto *srcObj = getUnderlyingObject(mt->getRawSource());
+        if (auto *gv = dyn_cast<GlobalVariable>(srcObj))
+          if (gv->isConstant() && gv->hasInitializer() &&
+              !hasPtr(gv->getValueType()))
+            continue;
+        *out << "\nERROR: memcpy into an escaping stack object from "
+                "possibly-pointer-carrying memory; byte-wise lifted "
+                "copies cannot preserve pointer bytes (known "
+                "limitation)\n\n";
+        exit(-1);
       }
     }
+  }
+
+  if (!optAllowStackEscape) {
     if (escaped.size() > 1) {
-      *out << "\nERROR: " << escaped.size()
-           << " distinct stack objects escape to callees; the lifted "
-              "single-block stack model cannot match them (known "
-              "limitation)\n\n";
-      exit(-1);
+      bool covered = frameSlots && !frameSlots->empty();
+      for (const auto *obj : escaped) {
+        if (!covered)
+          break;
+        auto dl = cast<AllocaInst>(obj)->getDebugLoc();
+        covered = dl && std::any_of(frameSlots->begin(), frameSlots->end(),
+                                    [&](const StackSlot &s) {
+                                      return s.srcLine == dl->getLine();
+                                    });
+      }
+      if (!covered) {
+        *out << "\nERROR: " << escaped.size()
+             << " distinct stack objects escape to callees; the lifted "
+                "single-block stack model cannot match them (known "
+                "limitation)\n\n";
+        exit(-1);
+      }
+      *out << escaped.size()
+           << " escaping stack objects, all covered by frame slots; "
+              "deferring to the per-object stack rewrite\n";
     }
   }
 

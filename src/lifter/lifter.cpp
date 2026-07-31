@@ -2,10 +2,13 @@
 // Copyright (c) 2018-present the Alive2 authors. MIT license.
 // Reference implementation: third_party/alive2-arm-tv/backend_tv/
 
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/DIBuilder.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/InstrTypes.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
 
@@ -55,14 +58,37 @@ void addDebugInfo(Function *srcFn,
   verifyModule(M);
 }
 
+SmallPtrSet<const Value *, 8> escapingStackObjects(Function &fn) {
+  SmallPtrSet<const Value *, 8> escaped;
+  for (auto &bb : fn) {
+    for (auto &i : bb) {
+      auto *cb = dyn_cast<CallBase>(&i);
+      if (!cb)
+        continue;
+      auto *callee = cb->getCalledFunction();
+      if (callee && callee->isIntrinsic())
+        continue; // memcpy & friends are modeled precisely
+      for (auto &arg : cb->args()) {
+        if (!arg->getType()->isPointerTy())
+          continue;
+        const Value *obj = getUnderlyingObject(arg);
+        if (isa<AllocaInst>(obj))
+          escaped.insert(obj);
+      }
+    }
+  }
+  return escaped;
+}
+
 pair<Function *, Function *>
 liftFunc(Function *srcFn, unique_ptr<MemoryBuffer> MB,
          std::unordered_map<unsigned, llvm::Instruction *> &lineMap,
          std::string optimize_tgt, std::ostream *out, const Target *Targ,
          llvm::Triple DefaultTT, const char *DefaultCPU,
-         const char *DefaultFeatures) {
+         const char *DefaultFeatures, const std::vector<StackSlot> *slots) {
   auto lifter = make_unique<bpf2llvm>(srcFn, std::move(MB), lineMap, out, Targ,
-                                      DefaultTT, DefaultCPU, DefaultFeatures);
+                                      DefaultTT, DefaultCPU, DefaultFeatures,
+                                      slots);
 
   auto [adjustedSrc, tgtFn] = lifter->run();
 

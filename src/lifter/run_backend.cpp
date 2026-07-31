@@ -4,6 +4,13 @@
 
 #include "lifter/lifter.h"
 
+#include "llvm/Analysis/RuntimeLibcallInfo.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
+#include "llvm/CodeGen/CodeGenTargetMachineImpl.h"
+#include "llvm/CodeGen/MachineFrameInfo.h"
+#include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/CodeGen/MachineModuleInfo.h"
+#include "llvm/CodeGen/TargetPassConfig.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/IR/LLVMContext.h"
@@ -16,6 +23,7 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 
+#include <algorithm>
 #include <cassert>
 #include <regex>
 #include <iostream>
@@ -41,7 +49,8 @@ void appendTargetFeatures(std::unique_ptr<llvm::Module> &MClone,
 unique_ptr<MemoryBuffer> lifter::generateAsm(Module &M, const Target *Targ,
                                              Triple DefaultTT,
                                              const char *DefaultCPU,
-                                             const char *DefaultFeatures) {
+                                             const char *DefaultFeatures,
+                                             std::vector<StackSlot> *slotsOut) {
   assert(DefaultFeatures && "[generateAsm] DefaultFeatures must be set");
   TargetOptions Opt;
   Opt.FloatABIType = llvm::FloatABI::Hard;
@@ -57,9 +66,37 @@ unique_ptr<MemoryBuffer> lifter::generateAsm(Module &M, const Target *Targ,
   raw_svector_ostream os(Asm);
 
   legacy::PassManager pass;
-  if (TM->addPassesToEmitFile(pass, os, nullptr, CodeGenFileType::AssemblyFile,
-                              false)) {
+  /*
+   * replicate CodeGenTargetMachineImpl::addPassesToEmitFile minus its
+   * trailing FreeMachineFunctionPass: the finalized frame layout
+   * (MachineFrameInfo) must still be readable after the run so the
+   * per-object stack rewrite can use it (slotsOut). MMIWP is owned by
+   * the pass manager and keeps the MachineFunctions alive until the
+   * end of this function.
+   */
+  auto &CGTM = static_cast<CodeGenTargetMachineImpl &>(*TM);
+  auto *MMIWP = new MachineModuleInfoWrapperPass(TM.get());
+  TargetPassConfig *PassConfig = CGTM.createPassConfig(pass);
+  PassConfig->setDisableVerify(false);
+  pass.add(PassConfig);
+  pass.add(MMIWP);
+  {
+    const TargetOptions &Options = TM->Options;
+    TargetLibraryInfoImpl TLII(TM->getTargetTriple(), Options.VecLib);
+    pass.add(new TargetLibraryInfoWrapperPass(TLII));
+    pass.add(new RuntimeLibraryInfoWrapper(
+        TM->getTargetTriple(), Options.ExceptionModel, Options.FloatABIType,
+        Options.EABIVersion, Options.MCOptions.ABIName, Options.VecLib));
+  }
+  if (PassConfig->addISelPasses()) {
     cerr << "\nERROR: Failed to add pass to generate assembly\n\n";
+    exit(-1);
+  }
+  PassConfig->addMachinePasses();
+  PassConfig->setInitialized();
+  if (CGTM.addAsmPrinter(pass, os, nullptr, CodeGenFileType::AssemblyFile,
+                         MMIWP->getMMI().getContext())) {
+    cerr << "\nERROR: Failed to add asm printer\n\n";
     exit(-1);
   }
   /*
@@ -103,6 +140,55 @@ unique_ptr<MemoryBuffer> lifter::generateAsm(Module &M, const Target *Targ,
   Ctx.setDiagnosticHandler(std::move(oldHandler));
   if (hadError)
     return nullptr;
+
+  /*
+   * read back the finalized frame layout: every non-dead slot that
+   * originated in an IR alloca, with the r10-relative offset the
+   * backend baked into the instruction stream (BPF eliminateFrameIndex
+   * emits getObjectOffset directly against r10). slots whose alloca
+   * lost its debug line, overlap another slot (StackColoring can merge
+   * lifetime-disjoint allocas), or would fall outside the lifted
+   * frame are dropped -- a dropped slot just isn't split, which the
+   * driver's all-or-nothing rewrite handles by bailing.
+   */
+  if (slotsOut) {
+    slotsOut->clear();
+    for (auto &F : *MClone) {
+      if (F.isDeclaration())
+        continue;
+      auto *MF = MMIWP->getMMI().getMachineFunction(F);
+      if (!MF)
+        continue;
+      auto &MFI = MF->getFrameInfo();
+      for (int i = 0, e = MFI.getObjectIndexEnd(); i < e; ++i) {
+        if (MFI.isDeadObjectIndex(i))
+          continue;
+        auto *AI = MFI.getObjectAllocation(i);
+        if (!AI)
+          continue; // spill/scratch slots stay in the residual block
+        auto DL = AI->getDebugLoc();
+        int64_t size = MFI.getObjectSize(i);
+        int64_t off = MFI.getObjectOffset(i);
+        if (!DL || size <= 0 || off >= 0 ||
+            StackFrameTopOffset + off < 0)
+          continue;
+        slotsOut->push_back({off, (uint64_t)size,
+                             MFI.getObjectAlign(i).value(), DL->getLine()});
+      }
+    }
+    std::sort(slotsOut->begin(), slotsOut->end(),
+              [](const StackSlot &a, const StackSlot &b) {
+                return a.offset < b.offset;
+              });
+    for (size_t i = 0; i + 1 < slotsOut->size();) {
+      if (slotsOut->at(i).offset + (int64_t)slotsOut->at(i).size >
+          slotsOut->at(i + 1).offset) {
+        slotsOut->erase(slotsOut->begin() + i, slotsOut->begin() + i + 2);
+      } else {
+        ++i;
+      }
+    }
+  }
 
   /*
    * LLVM's BPF asm printer emits MOV_32_64 (zext of a w register into
