@@ -88,9 +88,18 @@ backend-tv-family tools.
 
 ## Before sending — confidence checklist
 
-- [ ] Reproduce against riscv-tv itself: plant an equivalent bug in the
-      RISC-V backend (or an older LLVM with a known zext bug) and show
-      backend-tv misses it at O3, catches at O0
+- [~] Reproduce against riscv-tv itself — ATTEMPTED (2026-07-30): the
+      clean path (generate riscv asm for `zext i32 (call ...)`, delete
+      the `zext.w`, feed via `--asm-input`) is blocked by a reference-
+      tool limitation: their asm-input mode never populates the
+      debug-line map, so any function containing calls dies with
+      "can't locate corresponding source-side call instruction" (worth
+      mentioning to them; we fixed the analogous gap in bpf-tv, where
+      the same planted mutation IS missed pre-fix / caught post-fix at
+      default -O3). A reference-side reproduction would need a 1-line
+      patch to their driver plus an ANTLR build — deferred; the
+      shared-code argument (`enforceSExtZExt` + `-O3` default,
+      verbatim) stands on its own.
 - [ ] Check whether the arm-tv paper/repo already acknowledges this
       (their `disable_undef_input` comments show they thought about
       adjacent issues; search for freeze-refinement discussion)

@@ -59,4 +59,21 @@ else
   fail=1
 fi
 
+# second negative control: omit the zero-extension of a call result
+# (the shape of the historical 2019 BPFMIPeephole wrong-code bug and of
+# the -O3 freeze-refinement blind spot both) -- must be caught at the
+# default optimization level
+zx_asm="$WORK/zext-mutated.s"
+zx_log="$WORK/negative-zext.log"
+"$BPF_TV" --fn=f --asm-only --asm-output="$zx_asm" "$TESTDIR/zext_call.ll" >/dev/null 2>&1
+grep -v "w0 = w0" "$zx_asm" > "$zx_asm.tmp" && mv "$zx_asm.tmp" "$zx_asm"
+if "$BPF_TV" --fn=f --asm-input="$zx_asm" "$TESTDIR/zext_call.ll" >"$zx_log" 2>&1 &&
+   grep -q "^  1 incorrect transformations" "$zx_log"; then
+  echo "PASS: negative-control-zext (missing zext detected)"
+else
+  echo "FAIL: negative-control-zext (missing zext NOT detected; log: $zx_log)"
+  tail -6 "$zx_log" | sed 's/^/    /'
+  fail=1
+fi
+
 exit $fail

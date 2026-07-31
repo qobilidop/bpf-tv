@@ -52,9 +52,16 @@ the ISA — so either teaching the parser the mixed spelling or printing
 
 ## Before filing — confidence checklist
 
-- [ ] Reproduce on current LLVM main HEAD (we tested the 2026-05-13 pin)
-- [ ] Search existing llvm-project issues/PRs for prior reports
-- [ ] Check GAS behavior for comparison (does binutils accept `r0 = w0`?)
-- [ ] Decide suggested fix direction (parser accepts vs printer changes —
-      printer change would alter every CHECK line downstream; parser
-      accept is likely the palatable one)
+- [x] Present on current LLVM main HEAD — confirmed 2026-07-31 by code
+      identity: zero commits to `BPFAsmParser.cpp` since our pin, and
+      `MOV_32_64`'s asm string (`"$dst = $src"`, GPR/GPR32 mix) is
+      unchanged at HEAD.
+- [x] Duplicate search — no hits for "BPF asm parser mov" or
+      "MOV_32_64" in llvm-project issues (2026-07-31).
+- [ ] (optional) Check GAS behavior for comparison (does binutils
+      accept `r0 = w0`?)
+- [x] Suggested fix direction: teach the parser the mixed-width
+      spelling — changing the printer would churn every downstream
+      CHECK line.
+
+Confidence now: **high** — ready for review.

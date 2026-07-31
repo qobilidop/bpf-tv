@@ -57,8 +57,15 @@ the well-grounded motivating record.
 
 ## Before doing anything external
 
-- [ ] Independently re-derive the offset arithmetic (get a second pair
-      of eyes — this contradicts a filed report by a third party)
+- [x] Independently re-derive the offset arithmetic — DONE (2026-07-30),
+      mechanically: the issue's exact instruction bytes fed through
+      LLVM's BPF MCDisassembler + our CFG builder resolve the flagged
+      branches to unit 12 (0x60, the `%11` block) — not 0x58 as
+      annotated. The reporter's *first* branch (`+10` → 0x58) follows
+      the correct `pc + 8 + off*8` rule; the flagged ones appear to
+      miscount the two-unit `lddw` at 0x38. LLVM's own decoder
+      contradicts the report's central claim.
+      Confidence now: **high** on all three points.
 - [ ] Test with an actual Debian LLVM 19.1.7 to confirm the
       real-but-fixed hypothesis for old versions
 - [ ] Try harder to synthesize the tail-dup barrier-only-no-terminator

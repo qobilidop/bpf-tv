@@ -261,6 +261,10 @@ void doit(llvm::Module *srcModule, llvm::Function *srcFn, Verifier &verifier,
       exit(-1);
     }
   } else {
+    // asm-input mode: instrument the source anyway so .loc directives
+    // in asm that was generated from this same source (then possibly
+    // hand-mutated) still map calls back to their source instructions
+    lifter::addDebugInfo(srcFn, lineMap);
     stripEmptyInlineAsm(srcFn, lineMap);
     AsmBuffer = ExitOnErr(
         llvm::errorOrToExpected(llvm::MemoryBuffer::getFile(opt_asm_input)));
