@@ -6,3 +6,6 @@ build-*/
 .DS_Store
 compile_commands.json
 .cache/
+
+# M4 corpus: pinned by scripts/fetch-linux-corpus.sh, too large for a submodule
+third_party/linux/

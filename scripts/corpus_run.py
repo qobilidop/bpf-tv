@@ -150,19 +150,45 @@ def main():
                     help="output directory (default: build/eval)")
     ap.add_argument("--extra-arg", action="append", default=[],
                     help="extra bpf-tv flag (repeatable)")
+    ap.add_argument("--clang", type=pathlib.Path, default=None,
+                    help="compile *.c corpus files to .ll with this "
+                         "clang (-target bpf) before validation")
+    ap.add_argument("--cflag", action="append", default=[],
+                    help="extra clang flag (repeatable)")
     args = ap.parse_args()
 
     outdir = args.out or pathlib.Path("build/eval")
     outdir.mkdir(parents=True, exist_ok=True)
 
-    files = sorted(args.corpus.rglob("*.ll") if args.recursive
-                   else args.corpus.glob("*.ll"))
-    if not files:
-        print(f"no .ll files under {args.corpus}", file=sys.stderr)
+    records = []
+    if args.clang:
+        csrcs = sorted(args.corpus.rglob("*.c") if args.recursive
+                       else args.corpus.glob("*.c"))
+        lldir = outdir / "compiled-ll"
+        lldir.mkdir(parents=True, exist_ok=True)
+        files = []
+        print(f"compiling {len(csrcs)} C files with {args.clang}")
+        for c in csrcs:
+            ll = lldir / (c.stem + ".ll")
+            cmd = [str(args.clang), "-target", "bpf", "-O2", "-emit-llvm",
+                   "-S", *args.cflag, str(c), "-o", str(ll)]
+            p = subprocess.run(cmd, capture_output=True, text=True,
+                               timeout=120)
+            if p.returncode != 0:
+                first = (p.stderr.splitlines() or ["?"])[0][:100]
+                records.append({"file": str(c), "fn": None,
+                                "outcome": "compile-error",
+                                "detail": first, "wall_s": 0.0})
+            else:
+                files.append(ll)
+    else:
+        files = sorted(args.corpus.rglob("*.ll") if args.recursive
+                       else args.corpus.glob("*.ll"))
+    if not files and not records:
+        print(f"no input files under {args.corpus}", file=sys.stderr)
         return 1
 
     work = []
-    records = []
     for ll in files:
         fns = functions_in(ll)
         if not fns:
