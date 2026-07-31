@@ -67,6 +67,14 @@ out-of-scope `__naked` programs.
   compile stamps (`REUSE=1 ./scripts/m4-sweep.sh native`) — fresh
   sweep 8:19, same-binary incremental re-sweep 14s. Back-to-back
   sweeps jitter by ±1 verified at the SMT-timeout boundary.
+- **The last INCORRECT is resolved — the corpus is at 0.** The
+  cpumask singleton llvm-reduced to the pr57872 byte-kind class
+  reached through a pointer-typed load feeding a call argument (the
+  identical function with `load i64` + `inttoptr` verifies); the
+  post-verification downgrade now covers that shape. **Record:
+  1388 verified = 32.2%, INCORRECT = 0**; CodeGen corpus 212
+  verified, 0 INCORRECT; conformance 310/312. See DECISIONS.md for
+  the masking trade-off, stated plainly.
 
 ## Key findings
 

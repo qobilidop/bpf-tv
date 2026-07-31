@@ -110,15 +110,16 @@ K2's corpus, bpf_conformance as executable spec)
    whose refinement still fails under a successful split (opaque
    callees writing through escaped stack pointers — next model gap to
    chase).
-5. Cilium corpus; bpf2bpf local calls (last 2 conformance tests);
-   triage the cpumask_failure kfunc/poison-arg INCORRECT singleton
-   (llvm-reduce minimization in progress). Done same day: fastcc
-   accepted (+110 verified, record now 1386 = 32.1%), sweep
+5. Cilium corpus; bpf2bpf local calls (last 2 conformance tests).
+   Done same day: fastcc accepted (+110 verified); sweep
    infrastructure (12-way, reuse cache: fresh 8:19 / incremental
-   14s). Demoted: `-cpu v4` sweep (its backend-error motivation no
-   longer exists in the current sweep); failed-to-prove burndown
-   (measured model-hard: 60s SMT converts only 48/315 — needs model
-   work on helper-written escaped blocks, not solver budget).
+   14s); cpumask singleton resolved (byte-kind class via ptr-typed
+   loads, llvm-reduce-minimized, downgrade extended — **selftest
+   corpus INCORRECT = 0, record 1388 verified = 32.2%**). Demoted:
+   `-cpu v4` sweep (its backend-error motivation no longer exists);
+   failed-to-prove burndown (measured model-hard: 60s SMT converts
+   only 48/315 — needs model work on helper-written escaped blocks,
+   not solver budget).
 - **M5 — fuzzing** (later): Csmith integer subset, once the feature filter
   passes most generated programs.
 

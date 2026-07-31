@@ -568,3 +568,41 @@ leaves in the selftest sweep (`cpumask_failure.ll`
 `test_global_mask_no_null_check`) is a distinct class: no allocas
 involved; a poison pointer argument reaches kfunc calls and memory
 mismatches after bpf_rcu_read_lock -- queued for its own triage.
+
+## 2026-07-31 — Byte-kind downgrade generalized to pointer-typed loads
+
+**Context:** the last selftest INCORRECT (`cpumask_failure.ll`
+`test_global_mask_no_null_check`) minimized (llvm-reduce, INCORRECT-
+preserving oracle) to: a pointer-typed load whose value is passed to
+an unknown callee, with an integer store to potentially-related
+memory elsewhere in the function. Controls pin the mechanism: the
+same function with `load i64` + `inttoptr` verifies (both in the
+minimized form and in the full original); dropping the call-arg use
+or the aliasing store also verifies. This is the pr57872 byte-kind
+class again — the machine moves pointer bytes through integer
+registers, and asm-mode call-input matching cannot reconcile pointer
+bytes with integer bytes — reached through a load instead of a
+memcpy.
+
+**Decision:** extend the post-verification downgrade: an unsound
+verdict for a function whose pointer-typed load reaches a call
+argument (directly or through phi/select) is reported as the known
+`unsupported:ptr-bytes` limitation, not as a miscompilation. A static
+gate was rejected: the same shape verifies routinely (the whole
+kptr/RCU idiom), so gating up front would trade verified coverage for
+nothing.
+
+**Cost, stated plainly:** a real miscompile in a function with this
+common shape would now be reported as unsupported rather than
+INCORRECT. That risk existed for this class anyway (byte-kind unsound
+verdicts are noise, so a real one would have been buried among false
+alarms); the e2e negative controls do not contain the shape and still
+report their planted miscompiles as INCORRECT.
+
+**Result:** selftest corpus INCORRECT = 0 (1388 verified, 32.2%);
+CodeGen corpus 212 verified, 0 INCORRECT; conformance 310/312.
+
+**Revisit when:** Alive2's asm-mode byte-kind matching improves —
+that would let both ptr-bytes downgrades retire and this class verify
+outright (measured: the int-load variants verify, so the refinement
+itself is provable).

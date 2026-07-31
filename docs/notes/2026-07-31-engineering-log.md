@@ -42,14 +42,16 @@ error. Lesson: sum the budget by bucket before optimizing.
 
 ## Open threads
 
-- **cpumask_failure `test_global_mask_no_null_check`** (the 1
-  remaining selftest INCORRECT): llvm-reduce running with a
-  10s-SMT interestingness test. Hand minimizations (kptr-xchg-shaped
-  slot global + reload + pass-to-callee) verify, so the trigger is
-  something in the fuller shape (bpf_cpumask_create null-check
-  diamond, @err stores, two kfunc acquire/release chains?).
-  Counterexample has a poison ctx arg and "Mismatch in memory" after
-  bpf_rcu_read_lock.
+- **cpumask_failure singleton: RESOLVED** (see DECISIONS.md
+  byte-kind entry). llvm-reduce got it to ~15 lines: ptr-typed load →
+  call arg, plus an int store on a sibling path. `load i64` +
+  `inttoptr` verifies in both the minimized and the full original —
+  byte-kind class via loads. Post-hoc downgrade extended; selftest
+  INCORRECT is now 0. Reduce hazard worth remembering: the reducer
+  merged two distinct globals (@err, @global_mask) into one argument,
+  so the minimized aliasing structure is NOT the original's — always
+  re-confirm the pivot on the unreduced input (done: the load-kind
+  flip).
 - **ftp bucket @60s SMT**: measured. Of 315: only 48 verify (15%),
   249 stay failed-to-prove, 16 timeout, 2 stack-escape. The bucket is
   model-hard (quantified memory over helper-written blocks), NOT

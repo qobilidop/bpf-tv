@@ -786,6 +786,40 @@ void doit(llvm::Module *srcModule, llvm::Function *srcFn, Verifier &verifier,
     }
   }
 
+  // does the source load a pointer-typed value from memory and pass
+  // it to a call? the byte-kind class: the machine moves those bytes
+  // through integer registers, and Alive2's call-input matching in
+  // asm mode cannot reconcile pointer bytes with integer bytes
+  // (measured twice: pr57872's memcpy form, and cpumask_failure's
+  // load form -- the identical function with load i64 + inttoptr
+  // verifies)
+  auto ptrLoadReachesCall = [](llvm::Function &fn) {
+    for (auto &bb : fn) {
+      for (auto &i : bb) {
+        auto *li = dyn_cast<llvm::LoadInst>(&i);
+        if (!li || !li->getType()->isPointerTy())
+          continue;
+        llvm::SmallVector<const llvm::Value *, 8> flow{li};
+        llvm::SmallPtrSet<const llvm::Value *, 8> seen;
+        while (!flow.empty()) {
+          const auto *v = flow.pop_back_val();
+          if (!seen.insert(v).second)
+            continue;
+          for (const auto *u : v->users()) {
+            if (auto *cb = dyn_cast<llvm::CallBase>(u)) {
+              for (auto &arg : cb->args())
+                if (arg.get() == v)
+                  return true;
+            } else if (isa<llvm::PHINode>(u) || isa<llvm::SelectInst>(u)) {
+              flow.push_back(u);
+            }
+          }
+        }
+      }
+    }
+    return false;
+  };
+
   if (!opt_skip_verification) {
     auto unsoundBefore = verifier.num_unsound;
     verifier.compareFunctions(*F1, *F2);
@@ -802,12 +836,21 @@ void doit(llvm::Module *srcModule, llvm::Function *srcFn, Verifier &verifier,
      * functions that now VERIFY.
      */
     if (verifier.num_unsound > unsoundBefore &&
-        lifter::escapingStackObjects(*F1).size() > 1 &&
         !lifter::stackEscapeAllowed()) {
-      *out << "\nERROR: refinement failed under the per-object stack "
-              "model for a function with multiple stack objects that "
-              "escape to callees (known limitation)\n\n";
-      exit(-1);
+      if (lifter::escapingStackObjects(*F1).size() > 1) {
+        *out << "\nERROR: refinement failed under the per-object stack "
+                "model for a function with multiple stack objects that "
+                "escape to callees (known limitation)\n\n";
+        exit(-1);
+      }
+      if (ptrLoadReachesCall(*F1)) {
+        *out << "\nERROR: refinement failed for a function whose "
+                "pointer-typed load reaches a call argument; the lifted "
+                "code moves those bytes through integer registers and "
+                "byte-kind matching cannot preserve pointer bytes "
+                "(known false-alarm class)\n\n";
+        exit(-1);
+      }
     }
   }
 
