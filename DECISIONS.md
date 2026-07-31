@@ -349,3 +349,29 @@ from 4 CPU / 8 GB to 12 CPU / 24 GB (`colima start --cpu 12 --memory 24`).
 
 **Revisit when:** publishing a prebuilt toolchain image (see PLAN), which
 must also bake /work paths.
+
+## 2026-07-31 — Multiple escaping stack objects rejected (genuine model limit)
+
+**Context:** M4's 20 INCORRECTs (kfunc_call_*, verifier_bits_iter,
+dynptr_fail) minimized to: **two distinct allocas passed to callees**
+(one call or two — irrelevant; one alloca with any number of calls
+verifies). The source has one local block per alloca; the lifted target
+has one block for the whole frame, and Alive2's per-block call-input
+matching cannot map two distinct source blocks onto one target block.
+
+**Decision:** detect in `checkFuncSupport` (distinct alloca underlying
+objects among pointer call args > 1) and reject with a clear message
+(`unsupported:stack-escape`), rather than emit a false INCORRECT.
+`--allow-stack-escape` (hidden) keeps the failure reachable for study.
+
+**Why:** same rule as before — a false INCORRECT poisons a verifier's
+credibility; an honest coverage gap does not. This is the same family
+as the `simplifycfg` residual, now with a crisper boundary.
+
+**Cost:** real BPF code that passes two stack buffers to helpers is out
+of scope. Proper fix is upstream/model-level: per-object stack blocks
+in the lifter (a big change: the frame would stop being one alloca), or
+Alive2 matching multiple source blocks into one target block.
+
+**Revisit when:** attempting per-object stack modeling, or if upstream
+relaxes local-block matching.

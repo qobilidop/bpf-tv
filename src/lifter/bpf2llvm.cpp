@@ -6,6 +6,7 @@
 #include "lifter/bpf2llvm.h"
 
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/MC/MCDisassembler/MCDisassembler.h"
 #include "llvm/Support/CommandLine.h"
@@ -381,8 +382,53 @@ void bpf2llvm::checkArgSupport(Argument &arg) {
   }
 }
 
+// investigation escape hatch: skips the rejection below so the
+// underlying refinement failure can be studied directly
+static llvm::cl::opt<bool> optAllowStackEscape(
+    "allow-stack-escape",
+    llvm::cl::desc("Do not reject functions with multiple stack objects "
+                   "escaping to callees; expect spurious refinement "
+                   "failures (default=false)"),
+    llvm::cl::init(false), llvm::cl::Hidden);
+
 void bpf2llvm::checkFuncSupport(Function &func) {
-  // Stack pointers escaping to callees are supported: the spurious
+  // MULTIPLE distinct stack objects escaping to callees is a genuine
+  // limitation of the single-stack-block lifted model: the source has
+  // one local block per alloca, the target one block for the whole
+  // frame, and Alive2's per-block call-input matching cannot map two
+  // distinct source blocks onto the one target block. Minimized:
+  // two allocas passed to callees (one call or two -- irrelevant)
+  // fails; one alloca (any number of calls) verifies.
+  // See DECISIONS.md.
+  if (!optAllowStackEscape) {
+    llvm::SmallPtrSet<const Value *, 8> escaped;
+    for (auto &bb : func) {
+      for (auto &i : bb) {
+        auto *cb = dyn_cast<CallBase>(&i);
+        if (!cb)
+          continue;
+        auto *callee = cb->getCalledFunction();
+        if (callee && callee->isIntrinsic())
+          continue; // memcpy & friends are modeled precisely
+        for (auto &arg : cb->args()) {
+          if (!arg->getType()->isPointerTy())
+            continue;
+          const Value *obj = getUnderlyingObject(arg);
+          if (isa<AllocaInst>(obj))
+            escaped.insert(obj);
+        }
+      }
+    }
+    if (escaped.size() > 1) {
+      *out << "\nERROR: " << escaped.size()
+           << " distinct stack objects escape to callees; the lifted "
+              "single-block stack model cannot match them (known "
+              "limitation)\n\n";
+      exit(-1);
+    }
+  }
+
+  // Single stack pointers escaping to callees are supported: the spurious
   // failures this class used to produce were an artifact of `tail`
   // markers on lifted calls (see DECISIONS.md and
   // mc2llvm::fixupOptimizedTgt). One genuine residual limitation
