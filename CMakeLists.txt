@@ -20,8 +20,7 @@ set(BPF_TV_LLVM_TARGET_INCLUDES
   ${LLVM_MAIN_INCLUDE_DIR}/../lib
 )
 
-set(BPF_TV_SRCS
-  src/bpf-tv.cpp
+set(BPF_TV_LIFTER_SRCS
   src/lifter/bpf2llvm.cpp
   src/lifter/lifter.cpp
   src/lifter/mc2llvm.cpp
@@ -30,23 +29,35 @@ set(BPF_TV_SRCS
 )
 
 # aarch64/riscv components are pulled in because alive2's
-# llvm_util::optimize_module initializes those targets unconditionally
+# llvm_util::optimize_module initializes those targets unconditionally;
+# orcjit/native serve the conformance plugin's host JIT
 llvm_map_components_to_libnames(BPF_TV_LLVM_LIBS
   CodeGen TargetParser support core irreader bitwriter analysis passes
   transformutils ipo asmparser asmprinter target mc mcparser mcdisassembler
   bpfasmparser bpfcodegen bpfdesc bpfdisassembler bpfinfo
   aarch64codegen aarch64desc aarch64info
   riscvcodegen riscvdesc riscvinfo
+  orcjit native
 )
 
-add_llvm_executable(bpf-tv ${BPF_TV_SRCS})
-
-target_include_directories(bpf-tv PRIVATE
+add_library(bpftv_lifter STATIC ${BPF_TV_LIFTER_SRCS})
+target_include_directories(bpftv_lifter PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${BPF_TV_LLVM_TARGET_INCLUDES}
 )
 
+add_llvm_executable(bpf-tv src/bpf-tv.cpp)
 target_link_libraries(bpf-tv PRIVATE
+  bpftv_lifter
+  ${ALIVE_LIBS_LLVM}
+  ${Z3_LIBRARIES}
+  ${HIREDIS_LIBRARIES}
+  ${BPF_TV_LLVM_LIBS}
+)
+
+add_llvm_executable(bpf-tv-conformance-plugin src/conformance/plugin.cpp)
+target_link_libraries(bpf-tv-conformance-plugin PRIVATE
+  bpftv_lifter
   ${ALIVE_LIBS_LLVM}
   ${Z3_LIBRARIES}
   ${HIREDIS_LIBRARIES}
