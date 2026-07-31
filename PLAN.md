@@ -54,10 +54,14 @@ K2's corpus, bpf_conformance as executable spec)
   caught" entries toward the Jitterbug-style table. Upstream reports are
   DRAFTS ONLY in docs/upstream-drafts/ (policy: Bili reviews and signs off
   before anything is filed; each draft carries a confidence checklist).
-- **M3 — lifter differential harness** (next session): bpf_conformance corpus
-  assembled to bytecode → LLVM BPF disassembler → MCInsts → bpf2llvm →
-  execute lifted IR, compare r0; uBPF/rbpf as extra oracles. Both repos
-  become pinned submodules.
+- **M3 — lifter differential harness** ✅ (2026-07-30): bpf-tv as a
+  bpf_conformance plugin (bytecode → MCDisassembler → runBytes → host
+  ORC JIT → r0). **309/312**; the 3 failures are bpf2bpf local calls
+  (documented v0 exclusion). Found and fixed a latent store-imm crash +
+  the decoder sign-extension trap; atomics/jset32/bswap/gotol now
+  lifted. Report: docs/eval/2026-07-30-conformance.md. Queued: helper
+  IDs, bpf2bpf, uBPF/rbpf as extra oracles, boost in devcontainer for
+  CI wiring.
 - **M4 — real-world coverage** (after M3): kernel selftests + Cilium `.o`s
   (K2's corpus); needs a BPF-targeting clang. Headline: inline-asm / CO-RE
   rejection rate on production code.
