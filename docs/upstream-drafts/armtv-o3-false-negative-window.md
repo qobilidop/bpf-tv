@@ -51,6 +51,22 @@ riscv-tv likely share the window.
   sampled) — statistical, not sound.
 - An Alive2/opt mode that pins freeze-poison values as opaque.
 
+## Second finding (2026-07-30, later the same day): `tail`-marker false ALARMS from the same -O3 step
+
+The -O3-on-lifted-code step also causes spurious *failures* (the
+opposite direction from the finding above): it marks lifted calls
+`tail` while call arguments' stack provenance is hidden behind
+`ptrtoint/add/inttoptr`; after `run-replace-ptrtoint` collapses the
+round trip into a GEP, a `tail` call with an alloca-derived argument
+makes callee accesses UB, and refinement fails with "source is more
+defined than target". Reproduced on the reference riscv-tv (7 corpus
+functions from llvm/test/CodeGen/BPF fail identically there).
+Minimized: an exact src/tgt pair that flips verdict when the single
+`tail` token is removed. Fix (validated in bpf-tv): clear tail-call
+kinds on all lifted calls after optimization — strictly
+behavior-enlarging, so sound; 7 of our 9 false alarms became genuine
+verifications. arm-tv/riscv-tv would likely see the same coverage gain.
+
 ## Before sending — confidence checklist
 
 - [ ] Reproduce against riscv-tv itself: plant an equivalent bug in the

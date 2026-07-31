@@ -1157,6 +1157,22 @@ Function *mc2llvm::adjustSrc(Function *srcFn) {
 
 void mc2llvm::fixupOptimizedTgt(Function *tgt) {
   /*
+   * drop `tail` markers: while the lifted code still contained
+   * ptrtoint/add/inttoptr chains, the optimizer could not see that a
+   * call argument derives from the stack alloca and happily marked
+   * calls `tail`; once the round trip is collapsed back to a GEP, a
+   * `tail` call taking an alloca-derived pointer means the callee may
+   * not access it (LangRef), making every such access UB and producing
+   * spurious "source is more defined than target" failures. removing
+   * `tail` only enlarges the target's behavior set, so it cannot make
+   * a miscompiled target verify. see DECISIONS.md.
+   */
+  for (auto &bb : *tgt)
+    for (auto &i : bb)
+      if (auto *ci = dyn_cast<CallInst>(&i))
+        ci->setTailCallKind(CallInst::TCK_None);
+
+  /*
    * these attributes can be soundly removed, and a good thing too
    * since they cause spurious TV failures in ASM memory mode
    */

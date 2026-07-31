@@ -7,6 +7,7 @@
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/BinaryFormat/ELF.h"
 
 #include <cstdint>
@@ -377,47 +378,18 @@ void bpf2llvm::checkArgSupport(Argument &arg) {
   }
 }
 
-// is V a pointer into this function's stack frame? follows GEPs and
-// casts via getUnderlyingObject, and also looks through loads whose
-// address is itself stack-derived (mem2reg-unoptimized IR spills
-// pointers to stack slots and reloads them)
-static bool stackDerived(const Value *V, unsigned depth = 0) {
-  V = getUnderlyingObject(V);
-  if (isa<AllocaInst>(V))
-    return true;
-  if (auto *LI = dyn_cast<LoadInst>(V))
-    return depth < 8 && stackDerived(LI->getPointerOperand(), depth + 1);
-  return false;
-}
-
 void bpf2llvm::checkFuncSupport(Function &func) {
-  // Known limitation inherited from the reference implementation: the
-  // lifted function's whole stack frame is one memory block, so an
-  // opaque callee receiving a pointer into it could observe sibling
-  // stack data that the source-level callee (receiving a pointer to a
-  // distinct alloca) cannot -- refinement then fails spuriously
-  // ("source is more defined than target"). Reproduced identically
-  // with reference riscv-tv on 7 corpus functions. Reject with a
-  // clear message instead of reporting a false miscompilation.
-  // See DECISIONS.md "Escaping-stack-pointer false alarms".
-  for (auto &bb : func) {
-    for (auto &i : bb) {
-      auto *cb = dyn_cast<CallBase>(&i);
-      if (!cb)
-        continue;
-      auto *callee = cb->getCalledFunction();
-      if (callee && callee->isIntrinsic())
-        continue; // memcpy & friends are modeled precisely by Alive2
-      for (auto &arg : cb->args()) {
-        if (arg->getType()->isPointerTy() && stackDerived(arg)) {
-          *out << "\nERROR: a pointer into the stack frame escapes to a "
-                  "callee; this is a known limitation of the lifted "
-                  "stack model (spurious refinement failures)\n\n";
-          exit(-1);
-        }
-      }
-    }
-  }
+  // Stack pointers escaping to callees are supported: the spurious
+  // failures this class used to produce were an artifact of `tail`
+  // markers on lifted calls (see DECISIONS.md and
+  // mc2llvm::fixupOptimizedTgt). One genuine residual limitation
+  // remains: an opaque callee that WRITES a pointer through an
+  // escaped slot could, in the single-block lifted stack, produce a
+  // pointer aliasing sibling stack data -- a behavior the source's
+  // per-alloca blocks cannot exhibit ("simplifycfg.ll" class, one
+  // known corpus false alarm). Detecting that shape statically is not
+  // possible with opaque pointers; it is documented rather than
+  // rejected.
 }
 
 void bpf2llvm::checkTypeSupport(Type *ty) {

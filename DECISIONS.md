@@ -99,7 +99,36 @@ r1–r5. Needs explicit modeling of the fastcall attribute.
 
 **Revisit when:** implementing bpf_fastcall support (queued in PLAN.md).
 
-## 2026-07-30 — Escaping-stack-pointer false alarms: rejected up front (option b)
+## 2026-07-30 — `tail` markers stripped from lifted calls (SUPERSEDES the stack-escape rejection below)
+
+**Context:** The entire "escaping stack pointer" false-alarm class turned
+out to be an artifact, diagnosed by exact-pair bisection: while lifted
+code still contains `ptrtoint/add/inttoptr` chains, -O3 cannot see that a
+call argument derives from the stack alloca and marks calls `tail`; our
+round-trip collapse then rewrites the argument into a direct alloca GEP.
+A `tail` call passing an alloca-derived pointer means the callee may not
+access it (LangRef), so every callee access became UB → "source is more
+defined than target". The reference riscv-tv has the identical collapse
+and -O3 recipe, which is why it reproduced there — shared artifact, not
+shared fundamental limitation.
+
+**Decision:** `fixupOptimizedTgt` clears `tail` on every lifted call.
+Sound: removing `tail` only enlarges the target's behavior set, so a
+miscompiled target cannot start verifying. The blanket stack-escape
+rejection is removed.
+
+**Measured:** 7 of the 9 former INCORRECTs now genuinely verify; corpus
+verified 196 → 204; `pr57872` is a slow-but-honest failed-to-prove.
+
+**Genuine residual (1 corpus function, `simplifycfg.ll`):** an opaque
+callee that *writes a pointer through* an escaped slot could, in the
+single-block lifted stack, produce a pointer aliasing sibling stack
+data — impossible with the source's per-alloca blocks. Not statically
+detectable with opaque pointers; documented as the one known false-alarm
+class instead of rejected. Proper fix would need block-granular stack
+modeling or callee-behavior axioms (see the arm-tv ABI-axiom study).
+
+## 2026-07-30 — [superseded] Escaping-stack-pointer false alarms: rejected up front (option b)
 
 **Context:** Functions that pass a pointer to their stack frame to an
 external callee fail refinement: the lifted callee receives a pointer into
