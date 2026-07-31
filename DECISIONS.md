@@ -99,20 +99,47 @@ r1–r5. Needs explicit modeling of the fastcall attribute.
 
 **Revisit when:** implementing bpf_fastcall support (queued in PLAN.md).
 
-## 2026-07-30 — Escaping-stack-pointer false alarms: OPEN
+## 2026-07-30 — Escaping-stack-pointer false alarms: rejected up front (option b)
 
 **Context:** Functions that pass a pointer to their stack frame to an
-external callee (`fi_ri.ll`, `warn-stack.ll`, `pr57872.ll` class) fail
-refinement: the lifted callee receives a pointer into the one big lifted
-stack block and so can "see" sibling stack data the source callee cannot.
-Reproduces identically with the reference riscv-tv, so it is a limitation of
-the inherited setup, not our port.
+external callee fail refinement: the lifted callee receives a pointer into
+the one big lifted stack block and so can "see" sibling stack data the
+source callee cannot. Reproduced identically with the reference riscv-tv
+on all 7 corpus instances — a limitation of the inherited setup, not our
+port. It accounted for the *entire* remaining INCORRECT column (the
+i128 and bpf-fastcall-3 alarms turned out to be this class too), plus 2
+of 3 crashes and several failed-to-proves.
 
-**Decision:** none yet. Options: (a) study how arm-tv's aarch64 path
-handles it (ABI axioms) and port; (b) classify as known-limitation bucket in
-the corpus runner and accept the coverage loss.
+**Decision:** detect the pattern in `checkFuncSupport` (call argument
+whose underlying object is an alloca, following loads through stack
+slots for mem2reg-unoptimized IR) and reject with a clear
+known-limitation message → `unsupported:stack-escape` in the corpus
+taxonomy (17 functions). A false INCORRECT is poison for a verifier's
+credibility; an honest coverage gap is not.
 
-**Revisit:** next triage session (queued in PLAN.md).
+**Cost:** real-world code passing stack buffers to helpers
+(`bpf_probe_read(&local, ...)`) is temporarily out of scope — this is a
+significant real-world pattern, so option (a) remains queued:
+
+**Revisit when:** studying how arm-tv's aarch64 path handles escaping
+stack pointers (per-callee ABI axioms?) — required before the kernel
+selftests campaign (M4), where this pattern is pervasive.
+
+**Note:** `mc2llvm::checkFuncSupport` was a declared-but-never-called
+hook in the reference; bpf-tv now wires it into `checkSupport`.
+
+## 2026-07-30 — bpf_fastcall callees preserve r1–r5
+
+**Context:** Callees with the `"bpf_fastcall"` attribute preserve all
+registers except r0, and the backend relies on this. Modeling all calls
+as clobbering r1–r5 made such code fail refinement (corpus:
+`bpf-fastcall-2.ll` borderline, `bpf-fastcall-3.ll`).
+
+**Decision:** `doCall` skips the r1–r5 clobber when the callee or call
+site carries the attribute.
+
+**Revisit when:** the backend's bpf_fastcall handling changes (it has a
+wrong-code history: llvm #110618).
 
 ## 2026-07-30 — Driver flag is `--cpu`, not `--mcpu`
 

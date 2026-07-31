@@ -950,6 +950,9 @@ vec_error:
 
 void mc2llvm::checkSupport(Function *srcFn) {
   checkCallingConv(srcFn);
+  // NB: this hook is declared but never called in the reference
+  // implementation; bpf-tv uses it (stack-escape rejection)
+  checkFuncSupport(*srcFn);
   if (srcFn->getLinkage() ==
       GlobalValue::LinkageTypes::AvailableExternallyLinkage) {
     *out << "\nERROR: function has externally_available linkage type and won't "

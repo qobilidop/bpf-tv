@@ -6,6 +6,7 @@
 #include "lifter/bpf2llvm.h"
 
 #include "llvm/ADT/APInt.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/BinaryFormat/ELF.h"
 
 #include <cstdint>
@@ -316,9 +317,15 @@ void bpf2llvm::doCall(FunctionCallee FC, CallInst *llvmCI,
 
   auto RV = enforceSExtZExt(CI, sext, zext);
 
-  // r1-r5 are clobbered by calls; r6-r9 are callee-saved
-  for (unsigned reg = BPF::R1; reg <= BPF::R5; ++reg)
-    invalidateReg(reg, 64);
+  // r1-r5 are clobbered by calls; r6-r9 are callee-saved -- except
+  // that a callee marked bpf_fastcall preserves everything but r0,
+  // and the backend is allowed to rely on that
+  bool fastcall = llvmCI->hasFnAttr("bpf_fastcall") ||
+                  (calledFn && calledFn->hasFnAttribute("bpf_fastcall"));
+  if (!fastcall) {
+    for (unsigned reg = BPF::R1; reg <= BPF::R5; ++reg)
+      invalidateReg(reg, 64);
+  }
 
   auto retTy = FC.getFunctionType()->getReturnType();
   if (retTy->isIntegerTy() || retTy->isPointerTy()) {
@@ -370,7 +377,48 @@ void bpf2llvm::checkArgSupport(Argument &arg) {
   }
 }
 
-void bpf2llvm::checkFuncSupport(Function &func) {}
+// is V a pointer into this function's stack frame? follows GEPs and
+// casts via getUnderlyingObject, and also looks through loads whose
+// address is itself stack-derived (mem2reg-unoptimized IR spills
+// pointers to stack slots and reloads them)
+static bool stackDerived(const Value *V, unsigned depth = 0) {
+  V = getUnderlyingObject(V);
+  if (isa<AllocaInst>(V))
+    return true;
+  if (auto *LI = dyn_cast<LoadInst>(V))
+    return depth < 8 && stackDerived(LI->getPointerOperand(), depth + 1);
+  return false;
+}
+
+void bpf2llvm::checkFuncSupport(Function &func) {
+  // Known limitation inherited from the reference implementation: the
+  // lifted function's whole stack frame is one memory block, so an
+  // opaque callee receiving a pointer into it could observe sibling
+  // stack data that the source-level callee (receiving a pointer to a
+  // distinct alloca) cannot -- refinement then fails spuriously
+  // ("source is more defined than target"). Reproduced identically
+  // with reference riscv-tv on 7 corpus functions. Reject with a
+  // clear message instead of reporting a false miscompilation.
+  // See DECISIONS.md "Escaping-stack-pointer false alarms".
+  for (auto &bb : func) {
+    for (auto &i : bb) {
+      auto *cb = dyn_cast<CallBase>(&i);
+      if (!cb)
+        continue;
+      auto *callee = cb->getCalledFunction();
+      if (callee && callee->isIntrinsic())
+        continue; // memcpy & friends are modeled precisely by Alive2
+      for (auto &arg : cb->args()) {
+        if (arg->getType()->isPointerTy() && stackDerived(arg)) {
+          *out << "\nERROR: a pointer into the stack frame escapes to a "
+                  "callee; this is a known limitation of the lifted "
+                  "stack model (spurious refinement failures)\n\n";
+          exit(-1);
+        }
+      }
+    }
+  }
+}
 
 void bpf2llvm::checkTypeSupport(Type *ty) {
   if (ty->isVectorTy()) {
