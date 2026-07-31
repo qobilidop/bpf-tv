@@ -122,6 +122,80 @@ fatal at runtime.
 
 **Decision:** our flag is `--cpu` (default `v3`).
 
+## 2026-07-30 — Lifted code still optimized at -O3 by default, despite a known false-negative window
+
+**Context:** The lifter models unspecified bits (call-return upper halves,
+sub-64 argument padding) as `freeze poison`. The -O3 compaction of lifted
+code may legally *refine* that nondeterminism (observed: it chose 0),
+which can convert a non-refining target into a refining one — false
+negatives, demonstrated concretely in the M2 experiment: the reintroduced
+2019 zext bug is caught at `--optimize-tgt=O0` and missed at the default
+-O3. Optimizing the target side can only shrink its behavior set, so this
+window is structural, and it exists in the arm-tv/riscv-tv reference too
+(same `enforceSExtZExt`, same -O3 default).
+
+**Measured trade (CodeGen/BPF corpus):** O3 — 195 verified, 9 INCORRECT
+(all known-cause), median 0.02s. O0 — 175 verified, **25 INCORRECT**
+(16 additional, likely false alarms from unoptimized register-file memory
+traffic), 21 failed-to-prove, median 0.07s / max 3.6s.
+
+**Decision:** default stays `-O3` (usable, no spurious alarms);
+`--optimize-tgt=O0` remains available as the sound-but-noisy mode. Queued
+work: model unspecified bits with nondeterminism the optimizer cannot fold
+(candidate: volatile loads from a dedicated scratch object), which would
+close the window at full speed; and raise the finding with the arm-tv
+authors, since their tools share it.
+
+**Revisit when:** the sound-junk-modeling work lands, or upstream has a
+better answer.
+
+## 2026-07-30 — M2 reproduction: bug-reintroduction in place, candidate = 2019 zext/COPY-physreg bug
+
+**Context:** M2 needs a historical BPF miscompile demonstrably caught by
+bpf-tv. Candidates considered: #208244 (2026 subreg misfold) — merged
+*after* our LLVM pin so technically live, but latent: it needs a
+`MOV_32_64` with subreg source that no IR path produces at our pin (its own
+regression test is hand-written MIR); #208984 (2026, open) — reproducer
+requires inline-asm `barrier()`, which v0 rejects; PR48578 (2021) — symptom
+was a compiler crash, not silent wrong code.
+
+**Decision:** reproduce the 2019 bug fixed by `a0841dfe8594` (zext
+elimination wrongly trusting a `COPY` from a physical register, i.e. a
+call return value whose upper 32 bits are unknown). Method: invert the
+`Reg.isVirtual()` guard in `isCopyFrom32Def` in the in-place LLVM tree,
+incremental rebuild (~seconds), validate `zext i32 (call ...)` to i64,
+restore tree, rebuild, re-validate. Reintroduction-in-spirit (guard
+inversion), semantically matching bug #1 of the fix's commit message.
+
+**Result:** buggy compiler emits `call get; exit` (zext gone) → bpf-tv
+reports INCORRECT (with `--optimize-tgt=O0`; see the next entry for why O3
+misses it); pristine compiler emits `call get; w0 = w0; exit` → verified.
+
+**Why this method:** in-place revert + incremental rebuild costs seconds;
+a parallel scratch LLVM build costs ~40 minutes and disk. The tree is
+restored and re-verified afterwards (e2e suite green).
+
+## 2026-07-30 — "rN = wM" rewritten to "wN = wM" before asm parsing
+
+**Context:** LLVM's BPF asm printer emits `MOV_32_64` (zext of a w
+register into an r register) as `rN = wM`; LLVM's own BPF asm parser
+rejects that spelling (minimized: `llvm-mc -triple=bpfel` accepts
+`w0 = w1`, rejects `r0 = w0`). A printer/parser round-trip hole at our
+LLVM pin — upstream-reportable.
+
+**Decision:** `generateAsm` rewrites `rN = wM` → `wN = wM` textually
+before parsing.
+
+**Why sound:** at the encoding level `MOV_32_64` and `MOV_rr_32` are the
+same machine instruction (0xbc, BPF_ALU | BPF_MOV | BPF_X), whose ISA
+semantics zero the upper 32 bits; the rewrite is a byte-level identity on
+emitted code, and the lifter's `MOV_rr_32` case models exactly those
+semantics.
+
+**Revisit when:** the parser is fixed upstream, or lifting moves from
+textual asm to captured MCInsts (planned M3 direction) — then delete the
+rewrite.
+
 ## 2026-07-30 — (see DESIGN.md) substrate, pins, EXTERNAL_PROJECTS
 
 The larger decisions — official alive2 + vendored plumbing instead of the

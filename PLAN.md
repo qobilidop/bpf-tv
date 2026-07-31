@@ -41,14 +41,17 @@ K2's corpus, bpf_conformance as executable spec)
   - i128: should be rejected by checkTypeSupport but reaches verification
   - triage remaining: loop-exit-cond, remove_truncate_5, rodata_5,
     simplifycfg; 3 crashes; 21 asm-parse-errors; 22 "other"
-- **M2 — historical-miscompile regression (proof of concept)**: reproduce one
-  documented BPF backend miscompile and show bpf-tv reports it incorrect.
-  - Preferred candidate: llvm/llvm-project#208984 (branch-over-empty-block,
-    open as of 2026-07; possibly still present in our pinned tree — if so,
-    bpf-tv detecting it is a *live* result, no revert needed).
-  - Fallback: revert the #208244 subreg-misfolding fix (BPFMIPeephole, fixed
-    2026) in a scratch LLVM build and validate its own regression test.
-  - Grows into the "would have caught N of M" table (Jitterbug-style).
+- **M2 — historical-miscompile regression** ✅ (2026-07-30): reproduced the
+  2019 zext/COPY-physreg bug (fix `a0841dfe8594`) by guard-inversion in the
+  pinned tree; bpf-tv reports INCORRECT (at `--optimize-tgt=O0`), pristine
+  compiler verifies. Report: `docs/eval/2026-07-30-m2-historical-miscompile.md`.
+  Collateral findings: (1) -O3-on-lifted-code false-negative window (freeze
+  refinement; affects arm-tv reference too) — default stays O3, see
+  DECISIONS.md; (2) LLVM BPF asm printer/parser round-trip hole (`rN = wM`)
+  worked around by rewrite, corpus asm-parse-errors 21 -> 0, verified
+  189 -> 195. Queued: sound unfoldable junk modeling; upstream reports
+  (LLVM bug for the round-trip hole; arm-tv authors for the -O3 window);
+  more "would have caught" entries toward the Jitterbug-style table.
 - **M3 — lifter differential harness** (next session): bpf_conformance corpus
   assembled to bytecode → LLVM BPF disassembler → MCInsts → bpf2llvm →
   execute lifted IR, compare r0; uBPF/rbpf as extra oracles. Both repos
