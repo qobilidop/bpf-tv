@@ -49,9 +49,10 @@ K2's corpus, bpf_conformance as executable spec)
   refinement; affects arm-tv reference too) — default stays O3, see
   DECISIONS.md; (2) LLVM BPF asm printer/parser round-trip hole (`rN = wM`)
   worked around by rewrite, corpus asm-parse-errors 21 -> 0, verified
-  189 -> 195. Queued: sound unfoldable junk modeling; upstream reports
-  (LLVM bug for the round-trip hole; arm-tv authors for the -O3 window);
-  more "would have caught" entries toward the Jitterbug-style table.
+  189 -> 195. Queued: sound unfoldable junk modeling; more "would have
+  caught" entries toward the Jitterbug-style table. Upstream reports are
+  DRAFTS ONLY in docs/upstream-drafts/ (policy: Bili reviews and signs off
+  before anything is filed; each draft carries a confidence checklist).
 - **M3 — lifter differential harness** (next session): bpf_conformance corpus
   assembled to bytecode → LLVM BPF disassembler → MCInsts → bpf2llvm →
   execute lifted IR, compare r0; uBPF/rbpf as extra oracles. Both repos
