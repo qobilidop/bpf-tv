@@ -24,19 +24,24 @@ LLVM IR ─────────────────────▶ BPF a
                          physical pointers, freeze-poison init)
 ```
 
-- **Substrate**: the `arm-tv` branch of regehr/alive2, pinned as a git
-  submodule at `third_party/alive2`. All the target-independent hard parts
-  (assembly memory model, ABI axioms, SMT memory optimizations) live there and
-  are reused unchanged.
-- **Extension seam**: `bpf2llvm final : public mc2llvm`, exactly like
-  `riscv2llvm` (~2 kloc, one student, ~5 months — our effort model). No core
-  Alive2 changes needed for v0; the assembly memory mode is flag-gated in the
-  driver (`config::tgt_is_asm`).
-- **Own driver** (`src/bpf-tv.cpp`, modeled on `tools/backend-tv.cpp`):
-  constructs the BPF lifter directly, bypassing the hard-coded
-  aarch64/riscv64 dispatch in `backend_tv/lifter.cpp`. Zero fork maintenance;
-  a working lifter later becomes the in-tree proposal ("may I add the two
-  dispatch lines?").
+- **Substrate**: official AliveToolkit/alive2, pinned as a git submodule at
+  `third_party/alive2`. Measured 2026-07-30: the assembly-mode core
+  (`config::tgt_is_asm`, physical-pointer memory model in `ir/memory.cpp` /
+  `ir/state.cpp`) is upstream, and the arm-tv branch carries **zero**
+  semantic changes to core Alive2 beyond its `backend_tv/` directory (its
+  only core delta is a cosmetic `std::flush`). So the official repo is a
+  sufficient and better-maintained foundation.
+- **Lifter framework**: we own a BPF-specialized descendant of arm-tv's
+  target-agnostic plumbing (~3 kloc: `mc2llvm` builder/ABI core,
+  `streamerwrapper` asm→CFG reconstruction, `generateAsm`), vendored into
+  `src/` with attribution (MIT), stripped of FP/vector/ASLP machinery BPF
+  never uses. The arm-tv branch stays pinned at
+  `third_party/alive2-arm-tv` as a never-built reference; its `backend_tv/`
+  moves slowly (4 commits in the first half of 2026), so manually porting
+  fixes is cheap.
+- **Own driver** (`src/bpf-tv.cpp`, modeled on arm-tv's
+  `tools/backend-tv.cpp`): constructs the BPF lifter directly. No fork, no
+  patches: bpf-tv consumes official alive2's static libs Minotaur-style.
 
 ## The BPF machine model (lifter semantics)
 
@@ -127,17 +132,22 @@ miscompile #210280 as a target), gotox/jump tables, 128-bit values.
   commit, and the canonical build environment is the devcontainer
   (`.devcontainer/`, Ubuntu 24.04 — same family as alive2's CI). This will
   extend to test-harness deps (bpf_conformance, uBPF/rbpf) when they arrive.
-- `third_party/llvm-project`: submodule pinned to an LLVM main commit dated
-  with the alive2 arm-tv head (2026-05-13) so their APIs agree. Built from
-  source — RTTI + EH + assertions, targets `AArch64;RISCV;BPF` — because the
-  lifters include build-tree tablegen output (`Target/*/​*Gen*.inc`); an
-  installed LLVM lacks those.
-- `third_party/alive2`: submodule pinned at the arm-tv branch head, built
-  as-is (its `backend_tv` + `llvm_util` + `ir` + `smt` + `tools` + `util`
-  static libs, plus the ASLP bridge it unconditionally builds — ANTLR4
-  dependency at build time only; aslp-server is never needed for BPF). The
-  arm-tv branch is required: `backend_tv/` was never merged into mainline
-  AliveToolkit/alive2.
+- `third_party/llvm-project`: submodule pinned to LLVM main `f0ad8ee185bc`
+  (2026-05-13). Built from source — RTTI + EH + assertions, targets
+  `AArch64;RISCV;BPF` — because the lifter includes build-tree tablegen
+  output (`Target/BPF/BPFGen*.inc`); an installed LLVM lacks those.
+- `third_party/alive2`: official repo, submodule pinned at `cb9fbd54`
+  (2026-04-27) — the arm-tv branch's merge-base, so it is exactly the core
+  the reference code was developed against, and its compatibility with our
+  LLVM pin is proven (the arm-tv head built green against it natively).
+  Built with `BUILD_LLVM_UTILS=ON` only — no ANTLR/ASLP anywhere in our
+  dependency chain.
+- `third_party/alive2-arm-tv`: reference-only submodule (arm-tv branch head
+  `ab2fce5a`), never built by our scripts.
+- Z3: pinned source build (`z3-4.15.4`, Minotaur's recommended practice) in
+  the devcontainer at `/opt/z3`. Note: brew's Z3 4.16 showed a pathological
+  backend-tv refinement-query slowdown on macOS (2026-07-30, unresolved);
+  treat container Z3 as the configuration of record.
 - All builds are out-of-tree under `$BUILD_ROOT` (default `build/`;
   `build-linux/` in the devcontainer) so submodules stay clean.
 - `scripts/build-deps.sh` builds both; top-level CMake then builds `bpf-tv`

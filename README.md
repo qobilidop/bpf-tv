@@ -17,15 +17,20 @@ See [DESIGN.md](DESIGN.md) for architecture, scope, and staging.
 
 ```
 src/                       BPF lifter (bpf2llvm) + driver (bpf-tv)
-third_party/alive2         pinned submodule: regehr/alive2 @ arm-tv branch
+third_party/alive2         pinned submodule: official AliveToolkit/alive2
+third_party/alive2-arm-tv  pinned submodule: regehr/alive2 @ arm-tv branch
+                           (reference only — never built)
 third_party/llvm-project   pinned submodule: llvm/llvm-project
-scripts/build-deps.sh      builds both, out-of-tree under build*/
+scripts/build-deps.sh      builds LLVM + alive2, out-of-tree under build*/
 .devcontainer/             reproducible Ubuntu build environment
 ```
 
-Everything is pinned: both toolchain dependencies are submodules at exact
-commits (alive2's arm-tv head and an LLVM main commit of the same date, so
-their APIs agree), and the canonical build environment is the devcontainer.
+Everything is pinned: dependencies are submodules at exact commits chosen to
+be API-compatible (official alive2 at the arm-tv branch's merge-base, LLVM at
+a main commit of the same vintage), and the canonical build environment is
+the devcontainer. Pushes to main that touch `.devcontainer/` publish the
+image to GHCR (`ghcr.io/qobilidop/bpf-tv-devcontainer`) for local dev and CI
+reuse.
 
 ## Building
 
@@ -41,7 +46,9 @@ ninja -C "$BUILD_ROOT/bpf-tv"
 
 `BUILD_ROOT` defaults to `build/`; the devcontainer sets it to `build-linux/`
 so a native macOS build tree can coexist. A native (non-container) build works
-too with `brew install cmake ninja re2c z3 antlr antlr4-cpp-runtime`.
+too with `brew install cmake ninja re2c z3` — but note the devcontainer's
+pinned source-built Z3 is the configuration of record (brew's Z3 rolls
+forward untested).
 
 An LLVM *source build* is required (RTTI, EH, assertions; targets
 AArch64;RISCV;BPF) because the lifters use build-tree tablegen headers.

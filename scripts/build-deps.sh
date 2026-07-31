@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Build the two heavy dependencies out-of-tree: LLVM (from the pinned
-# submodule) and alive2 (arm-tv branch, pinned submodule).
-# Idempotent; safe to re-run after a failure.
+# Build the two heavy dependencies out-of-tree: LLVM and official alive2
+# (both pinned submodules). Idempotent; safe to re-run after a failure.
 #
 # Layout (all under $BUILD_ROOT, default <repo>/build):
 #   $BUILD_ROOT/llvm     LLVM build tree (also provides Target/*/​*Gen*.inc)
 #   $BUILD_ROOT/alive2   alive2 build tree (static libs + alive-tv etc.)
+#
+# third_party/alive2-arm-tv is reference-only and is never built here.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -26,19 +27,9 @@ case "$(uname -s)" in
   *)      JOBS="${JOBS:-$(nproc)}" ;;
 esac
 
-# ANTLR (needed by alive2's aslp bridge, build-time only): a complete jar and
-# a version-matched C++ runtime. The devcontainer installs both under
-# /opt/antlr; on macOS use homebrew. Override with ANTLR4_JAR / ANTLR4_PREFIX.
-if [ -z "${ANTLR4_JAR:-}" ]; then
-  for cand in /opt/antlr/antlr-complete.jar \
-              "$(brew --prefix antlr 2>/dev/null || true)"/antlr-*-complete.jar \
-              "$(brew --prefix antlr 2>/dev/null || true)"/libexec/antlr-*-complete.jar; do
-    if [ -f "$cand" ]; then ANTLR4_JAR="$cand"; break; fi
-  done
-fi
-[ -n "${ANTLR4_JAR:-}" ] || { echo "error: ANTLR jar not found; set ANTLR4_JAR" >&2; exit 1; }
-
-PREFIX_PATH="${ANTLR4_PREFIX:-/opt/antlr}"
+# Z3: the devcontainer installs a pinned source build at /opt/z3; a native
+# macOS setup can use homebrew. Override with Z3_PREFIX.
+PREFIX_PATH="${Z3_PREFIX:-/opt/z3}"
 if command -v brew >/dev/null 2>&1; then
   PREFIX_PATH="$PREFIX_PATH;$(brew --prefix)"
 fi
@@ -58,8 +49,7 @@ cmake -S "$ALIVE2_SRC" -B "$ALIVE2_BUILD" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DBUILD_LLVM_UTILS=ON \
   -DLLVM_DIR="$LLVM_BUILD/lib/cmake/llvm" \
-  -DCMAKE_PREFIX_PATH="$PREFIX_PATH" \
-  -DANTLR4_JAR_LOCATION="$ANTLR4_JAR"
+  -DCMAKE_PREFIX_PATH="$PREFIX_PATH"
 ninja -C "$ALIVE2_BUILD" -j "$JOBS"
 
 echo "deps built: $LLVM_BUILD, $ALIVE2_BUILD"

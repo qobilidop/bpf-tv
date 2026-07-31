@@ -7,30 +7,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential gcc-14 g++-14 \
     cmake ninja-build re2c ccache \
     git python3 ca-certificates curl unzip \
-    z3 libz3-dev zlib1g-dev \
-    default-jre-headless \
+    zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# ANTLR4 for alive2's aslp bridge (build-time only). The complete jar and the
-# C++ runtime must be the SAME version, so install both from antlr.org rather
-# than mixing apt's runtime with a downloaded jar.
-ARG ANTLR_VERSION=4.13.2
-RUN mkdir -p /opt/antlr \
-    && curl -fsSL "https://www.antlr.org/download/antlr-${ANTLR_VERSION}-complete.jar" \
-         -o /opt/antlr/antlr-complete.jar \
-    && curl -fsSL "https://www.antlr.org/download/antlr4-cpp-runtime-${ANTLR_VERSION}-source.zip" \
-         -o /tmp/antlr4-cpp.zip \
-    && mkdir /tmp/antlr4-cpp && cd /tmp/antlr4-cpp && unzip -q /tmp/antlr4-cpp.zip \
-    && cmake -S . -B build -G Ninja \
+# Z3, built from a pinned tag (apt's z3 is ancient and brew's is untested by
+# alive2; a pinned source build is what Minotaur recommends for Alive2 use).
+ARG Z3_VERSION=z3-4.15.4
+RUN git clone --depth 1 --branch ${Z3_VERSION} https://github.com/Z3Prover/z3.git /tmp/z3 \
+    && cmake -S /tmp/z3 -B /tmp/z3/build -G Ninja \
          -DCMAKE_BUILD_TYPE=Release \
-         -DCMAKE_INSTALL_PREFIX=/opt/antlr \
-         -DANTLR4_INSTALL=ON \
-         -DANTLR_BUILD_CPP_TESTS=OFF \
-         -DANTLR_BUILD_SHARED=ON \
-    && ninja -C build install \
-    && rm -rf /tmp/antlr4-cpp /tmp/antlr4-cpp.zip
+         -DCMAKE_INSTALL_PREFIX=/opt/z3 \
+         -DZ3_BUILD_TEST_EXECUTABLES=OFF \
+    && ninja -C /tmp/z3/build install \
+    && rm -rf /tmp/z3
 
 ENV CC=gcc-14 CXX=g++-14 \
-    ANTLR4_JAR=/opt/antlr/antlr-complete.jar \
-    ANTLR4_PREFIX=/opt/antlr \
-    LD_LIBRARY_PATH=/opt/antlr/lib
+    Z3_PREFIX=/opt/z3 \
+    PATH=/opt/z3/bin:$PATH \
+    LD_LIBRARY_PATH=/opt/z3/lib
