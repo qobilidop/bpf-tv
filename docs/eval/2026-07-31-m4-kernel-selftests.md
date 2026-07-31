@@ -52,6 +52,19 @@ clean-Linux-headers cross-check).
   "Unsupported metadata: 51").
 - `libarena/include` added to the include path (269 compile errors).
 
+## Container cross-check (real Linux headers)
+
+`./scripts/m4-sweep.sh container` (devcontainer, glibc headers, no
+shim): 559 files / 3451 functions, 13.0% verified, inline-asm 41.8%,
+maps 11.0%. **More** compile errors than the native shim run (417 vs
+286) — glibc headers do not cross-compile cleanly for `-target bpf`
+without `-nostdinc`, so the "clean" environment is actually the worse
+compiler front end here. The two runs agree on structure (inline-asm
+~41%, verified ~13%, maps 11–14%), which is the point of the
+cross-check; the native shim numbers stand as the record. A proper
+container run would use the shim flags too (kernel selftests build
+with `-nostdinc` in-tree as well).
+
 ## Caveats
 
 - macOS header shim compiles 68% of files; the devcontainer run with
