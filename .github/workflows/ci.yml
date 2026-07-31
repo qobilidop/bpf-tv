@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/qobilidop/bpf-tv-devcontainer:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      BUILD_ROOT: ${{ github.workspace }}/build-linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize pinned submodules (shallow)
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git submodule update --init --depth 1 \
+            third_party/llvm-project third_party/alive2
+
+      - name: Restore dependency build tree
+        uses: actions/cache@v4
+        with:
+          path: |
+            build-linux/llvm
+            build-linux/alive2
+          key: deps-${{ runner.os }}-${{ hashFiles('.gitmodules') }}-${{ hashFiles('scripts/build-deps.sh') }}
+
+      - name: Build dependencies and bpf-tv
+        run: bash scripts/build-deps.sh
+
+      - name: End-to-end suite
+        run: bash tests/e2e/run.sh
+
+      - name: Corpus sweep
+        run: |
+          python3 scripts/corpus_run.py \
+            --bpf-tv "$BUILD_ROOT/alive2/bpf-tv/bpf-tv" \
+            --out "$BUILD_ROOT/eval"
+          # the sweep must be alarm-free modulo the one documented
+          # residual (simplifycfg.ll; see DECISIONS.md)
+          incorrect=$(grep -c '"INCORRECT"' "$BUILD_ROOT/eval/corpus-results.jsonl" || true)
+          echo "INCORRECT count: $incorrect"
+          test "$incorrect" -le 1
+
+      - name: Upload corpus report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-report
+          path: |
+            build-linux/eval/corpus-report.md
+            build-linux/eval/corpus-results.jsonl

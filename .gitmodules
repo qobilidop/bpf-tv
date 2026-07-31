@@ -11,3 +11,7 @@
 	path = third_party/alive2
 	url = https://github.com/AliveToolkit/alive2.git
 	shallow = true
+[submodule "third_party/bpf_conformance"]
+	path = third_party/bpf_conformance
+	url = https://github.com/Alan-Jowett/bpf_conformance.git
+	shallow = true
