@@ -61,6 +61,9 @@ K2's corpus, bpf_conformance as executable spec)
 
 ## Execution notes
 
+- Every tricky design decision gets a [DECISIONS.md](DECISIONS.md) entry
+  (context / decision / why / revisit-when), in the same commit as the code.
+
 - Iterate natively (fast), validate in container (config of record).
 - Corpus runner: 10s SMT timeout, 120s wall cap per function, 8-way parallel.
 - CodeGen/BPF tests embed llc RUN lines (various -mcpu, bpfeb); the runner
