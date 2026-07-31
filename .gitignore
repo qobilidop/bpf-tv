@@ -1,0 +1,8 @@
+# Build trees (all builds are out-of-tree, under build*/ at repo root)
+build/
+build-*/
+
+# Editor / OS noise
+.DS_Store
+compile_commands.json
+.cache/
