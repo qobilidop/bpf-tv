@@ -1,0 +1,61 @@
+# M4: kernel selftests coverage (first measurement)
+
+Corpus: `tools/testing/selftests/bpf/progs` at linux `8ba098e6b6ff`
+(2026-07-31), 1009 C files → 690 compiled (pinned clang 23 @ `f0ad8ee`,
+`-target bpf -O2`, macOS header shim) → **4316 functions** through
+bpf-tv (`-cpu v3` default, 10s SMT timeout).
+
+Run: `./scripts/m4-sweep.sh native` (container mode for the
+clean-Linux-headers cross-check).
+
+## Outcomes
+
+| outcome | count | % | reading |
+|---|---|---|---|
+| unsupported:inline-asm | 1735 | 40.2% | the measured cap (see below) |
+| unsupported:global-lookup | 604 | 14.0% | maps (`.maps` globals) — v0 exclusion |
+| **verified** | **601** | **13.9%** | median 0.03s, p90 0.05s, max 11.8s |
+| other | 571 | 13.2% | 334 helper-calls-by-number, 109 calling-conv, rest misc |
+| unsupported:src-ir | 322 | 7.5% | Alive2-side rejections (atomics etc.) |
+| compile-error | 286 | 6.6% | mostly macOS-shim artifacts; container run pending |
+| failed-to-prove | 46 | 1.1% | |
+| INCORRECT | 20 | 0.5% | kfunc-call clusters — new false-alarm class, untriaged |
+| everything else | ~130 | ~3% | varargs, byval, arg-type, ... |
+
+## Key findings
+
+1. **Inline asm is the #1 coverage cap on real-world code — now
+   quantified at 40.2%** of selftest functions (the evaluation doc
+   flagged exactly this risk as "measure early"). Composition: a large
+   share is the `verifier_*` test idiom — entire programs as `__naked`
+   asm blobs, which are *asm inputs*, not compiler output, and thus
+   legitimately out of scope for backend TV; the meaningful remainder
+   is `barrier_var`-style empty-template-with-outputs asm (queued
+   v0.5 feature) and `.8byte`/`may_goto` idioms.
+2. **Maps are the #2 cap (14%)** — `LD_imm64` of `.maps`-section
+   globals fails lifter global lookup. The K2-style map modeling from
+   the design doc is the fix; until then this bucket is the honest
+   price of the v0 cut.
+3. **Helper calls by number (334)** — same gap as the conformance
+   harness's 3 remaining tests; one feature closes both.
+4. **kfunc-call INCORRECT cluster (20)** — `verifier_bits_iter`,
+   `kfunc_call_*`, `dynptr_fail`: calls to declared kfuncs produce
+   refinement failures; untriaged, suspected callee-declaration or
+   matched-call modeling issue. THE next false-alarm burndown target.
+5. **Verification cost stays trivial** (p90 = 0.05s) — solver time is
+   not the bottleneck at v0 scope; feature coverage is.
+
+## Fixes that fell out of round one
+
+- Metadata kinds `srcloc`/`errno.tbaa`/`tbaa.struct`/`inline_history`
+  are now stripped by the driver (1683 functions were blocked on
+  "Unsupported metadata: 51").
+- `libarena/include` added to the include path (269 compile errors).
+
+## Caveats
+
+- macOS header shim compiles 68% of files; the devcontainer run with
+  real Linux headers is the number of record (pending).
+- `-cpu v3`: signed-div functions land in backend-error; a v4 sweep
+  would convert them.
+- Single-function-at-a-time validation; bpf2bpf callees not composed.

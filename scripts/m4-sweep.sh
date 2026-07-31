@@ -32,6 +32,7 @@ python3 "$ROOT/scripts/corpus_run.py" \
   --cflag=-I"$L/tools/include/uapi" \
   --cflag=-I"$L/include/uapi" \
   --cflag=-I"$L/tools/testing/selftests/bpf" \
+  --cflag=-I"$L/tools/testing/selftests/bpf/libarena/include" \
   --cflag=-D__TARGET_ARCH_x86 \
   --cflag=-Wno-incompatible-function-pointer-types \
   --cflag=-Wno-implicit-function-declaration \

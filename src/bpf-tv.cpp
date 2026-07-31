@@ -12,6 +12,7 @@
 #include "tools/transform.h"
 #include "util/version.h"
 
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Bitcode/BitcodeReader.h"
@@ -206,10 +207,21 @@ void doit(llvm::Module *srcModule, llvm::Function *srcFn, Verifier &verifier,
   }
 
   {
-    auto Pred = [](unsigned MDKind, llvm::MDNode *Node) {
-      return MDKind == llvm::LLVMContext::MD_alias_scope ||
-             MDKind == llvm::LLVMContext::MD_noalias ||
-             MDKind == llvm::LLVMContext::MD_tbaa;
+    // strip metadata Alive2 cannot process and that carries no
+    // refinement-relevant semantics: aliasing hints (like the
+    // reference driver) plus srcloc/errno.tbaa/inline_history/
+    // tbaa.struct, which real-world BPF objects carry
+    auto &Ctx = srcFn->getContext();
+    llvm::SmallSet<unsigned, 8> drop;
+    drop.insert(llvm::LLVMContext::MD_alias_scope);
+    drop.insert(llvm::LLVMContext::MD_noalias);
+    drop.insert(llvm::LLVMContext::MD_tbaa);
+    drop.insert(llvm::LLVMContext::MD_tbaa_struct);
+    for (const char *name :
+         {"srcloc", "errno.tbaa", "inline_history", "prof", "unpredictable"})
+      drop.insert(Ctx.getMDKindID(name));
+    auto Pred = [&drop](unsigned MDKind, llvm::MDNode *Node) {
+      return drop.contains(MDKind);
     };
     for (auto &bb : *srcFn)
       for (auto &i : bb)
