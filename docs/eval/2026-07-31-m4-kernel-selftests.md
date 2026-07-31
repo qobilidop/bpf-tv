@@ -24,16 +24,32 @@ clean-Linux-headers cross-check).
 
 ## Running total (2026-07-31, after helpers + barrier_var + maps)
 
-A fresh full sweep (same flags/corpus) confirms: **1212 verified =
-28.1%** of 4316 functions — doubled from the 13.9% first measurement.
-`unsupported:global-lookup` is gone from the table entirely.
-**INCORRECT = 31, every one the documented escaping-stack class**
-(list matches the per-bucket triage exactly; no new classes). The
-largest remaining reducible buckets are failed-to-prove (191,
-quantified-memory solver class) and that INCORRECT class (per-object
-stack blocks queued); inline asm (39.8%) is dominated by out-of-scope
-`__naked` programs; "other" (408) is mostly calling-conv and misc
-one-offs.
+A fresh full sweep (same flags/corpus) confirmed at this stage:
+**1212 verified = 28.1%** of 4316 functions — doubled from the 13.9%
+first measurement, with `unsupported:global-lookup` gone and
+INCORRECT = 31, every one the documented escaping-stack class.
+
+## Per-object stack blocks (2026-07-31, same day)
+
+The escaping-stack class is now retired (DECISIONS.md): the lifter
+reads the backend's own frame layout out of MachineFrameInfo and the
+driver carves alloca-backed slots into per-object blocks after -O3
+(all-or-nothing, falling back to the faithful single-block model).
+Final sweep: **verified 1273 = 29.5%**, **INCORRECT = 1** (a distinct
+kfunc/poison-arg class in `cpumask_failure.ll`, queued). Of the old
+31: 18 verify, 12 move to failed-to-prove (solver budget — the
+map-lookup stack-key shape verifies at 60s SMT). Multi-escape
+functions are admitted when slots cover their allocas; the ones whose
+refinement still fails under a successful split (27, dominated by
+opaque callees writing through escaped stack pointers) are downgraded
+back to the honest `unsupported:stack-escape` rejection (81 total)
+rather than reported as false miscompilations. A new
+`unsupported:ptr-bytes` gate (17) covers the pr57872 byte-kind class:
+memcpy of possibly-pointer-carrying memory into an escaping stack
+object cannot preserve pointer bytes through integer registers.
+failed-to-prove is now the largest reducible bucket (287, mostly
+quantified-memory solver cost); inline asm (39.9%) remains dominated
+by out-of-scope `__naked` programs.
 
 ## Key findings
 

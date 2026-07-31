@@ -98,11 +98,23 @@ K2's corpus, bpf_conformance as executable spec)
    documented escaping-stack class — now 31 total, strengthening the
    per-object-stack-blocks case). Collateral: functions named `entry`
    no longer break the lifted module (synthetic entry renamed).
-4. Cilium corpus; `-cpu v4` sweep (converts the backend-error bucket);
-   per-object stack blocks (retires the last false-alarm class, now
-   31 functions — the map-lookup stack-key idiom made this the
-   dominant remaining false-alarm source); bpf2bpf local calls (last
-   2 conformance tests).
+4. ~~**Per-object stack blocks**~~ ✅ (2026-07-31): backend frame
+   layout (MachineFrameInfo) + all-or-nothing post-lift rewrite
+   carving alloca-backed slots into per-object blocks (DECISIONS.md).
+   Selftests: verified 1212 → 1273 (29.5%), **INCORRECT 31 → 1** (the
+   remainder is a distinct kfunc/poison-arg singleton in
+   `cpumask_failure.ll`, queued). CodeGen corpus 208 verified, 0
+   INCORRECT. New honest buckets: `unsupported:ptr-bytes` (pointer
+   bytes through integer registers, pr57872 class) and post-hoc
+   `unsupported:stack-escape` downgrade for multi-escape functions
+   whose refinement still fails under a successful split (opaque
+   callees writing through escaped stack pointers — next model gap to
+   chase).
+5. Cilium corpus; `-cpu v4` sweep (converts the backend-error
+   bucket); bpf2bpf local calls (last 2 conformance tests);
+   failed-to-prove burndown (287 — largest reducible bucket; many are
+   solver-budget: the map-lookup stack-key shape verifies at 60s SMT);
+   triage the cpumask_failure kfunc/poison-arg INCORRECT singleton.
 - **M5 — fuzzing** (later): Csmith integer subset, once the feature filter
   passes most generated programs.
 
