@@ -4,6 +4,9 @@
 
 #include "lifter/lifter.h"
 
+#include "llvm/IR/DiagnosticInfo.h"
+#include "llvm/IR/DiagnosticPrinter.h"
+#include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
@@ -68,6 +71,36 @@ unique_ptr<MemoryBuffer> lifter::generateAsm(Module &M, const Target *Targ,
   if (DefaultFeatures[0] != '\0')
     appendTargetFeatures(MClone, DefaultFeatures);
 
+  /*
+   * capture backend diagnostics: e.g. the BPF backend reports "signed
+   * division unsupported for this cpu" as an error diagnostic and then
+   * emits garbage code (a bare exit). validating that garbage would
+   * misreport a miscompilation; the right outcome is "backend error".
+   */
+  struct ErrorCatcher final : DiagnosticHandler {
+    bool hadError = false;
+    bool handleDiagnostics(const DiagnosticInfo &DI) override {
+      if (DI.getSeverity() == DS_Error) {
+        hadError = true;
+        DiagnosticPrinterRawOStream DP(errs());
+        errs() << "backend diagnostic: ";
+        DI.print(DP);
+        errs() << "\n";
+      }
+      return true; // handled; don't crash on unhandled errors
+    }
+  };
+  auto &Ctx = MClone->getContext();
+  auto oldHandler = Ctx.getDiagnosticHandler();
+  auto catcherOwned = std::make_unique<ErrorCatcher>();
+  auto *catcher = catcherOwned.get();
+  Ctx.setDiagnosticHandler(std::move(catcherOwned));
+
   pass.run(*MClone.get());
+
+  bool hadError = catcher->hadError;
+  Ctx.setDiagnosticHandler(std::move(oldHandler));
+  if (hadError)
+    return nullptr;
   return MemoryBuffer::getMemBuffer(Asm.c_str());
 }

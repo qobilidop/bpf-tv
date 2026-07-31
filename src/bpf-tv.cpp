@@ -98,11 +98,69 @@ llvm::cl::opt<string> opt_asm_input(
                    "(default=no asm input)"),
     llvm::cl::cat(alive_cmdargs));
 
+llvm::cl::opt<bool> run_replace_ptrtoint(
+    "run-replace-ptrtoint",
+    llvm::cl::desc(
+        "Replace ptr-int round trips with single GEP (default=true)"),
+    llvm::cl::init(true), llvm::cl::cat(alive_cmdargs));
+
 llvm::ExitOnError ExitOnErr;
 llvm::Triple DefaultTT;
 std::string DefaultDL;
 std::string DefaultCPU;
 const char *DefaultFeatures = "";
+
+// Given an intToPtr instruction, checks for a round trip from a
+// ptrToInt instruction, then replaces with a single GEP instruction.
+// (from the reference backend-tv.cpp; without this, lifted stack
+// pointer arithmetic that flows into calls looks like a provenance
+// escape and produces spurious refinement failures)
+bool tryReplaceRoundTrip(llvm::IntToPtrInst *intToPtr) {
+  assert(intToPtr);
+
+  // we only understand add instructions in this context
+  auto *op_inst = dyn_cast<llvm::Instruction>(intToPtr->getOperand(0));
+  if (!op_inst || op_inst->getOpcode() != llvm::Instruction::Add ||
+      op_inst->getNumUses() > 1)
+    return false;
+
+  // keep track of (ptr + int) vs (int + ptr)
+  bool ptrOnLeft = true;
+  auto *ptrToInt = dyn_cast<llvm::PtrToIntInst>(op_inst->getOperand(0));
+
+  if (!ptrToInt) {
+    ptrOnLeft = false;
+    ptrToInt = dyn_cast<llvm::PtrToIntInst>(op_inst->getOperand(1));
+  }
+
+  if (!ptrToInt || ptrToInt->getNumUses() > 1)
+    return false;
+
+  llvm::IRBuilder<> B(intToPtr);
+
+  llvm::Value *gep = B.CreateGEP(B.getInt8Ty(), ptrToInt->getOperand(0),
+                                 {op_inst->getOperand(ptrOnLeft ? 1 : 0)}, "");
+
+  intToPtr->replaceAllUsesWith(gep);
+  intToPtr->eraseFromParent();
+  op_inst->eraseFromParent();
+  ptrToInt->eraseFromParent();
+
+  return true;
+}
+
+// find and collapse sequences of the form ptrToInt, add, intToPtr
+// into a single GEP instruction
+void tryReplacePtrtoInt(llvm::Function *fn) {
+  for (auto it = llvm::instructions(*fn).begin(),
+            end = llvm::instructions(*fn).end();
+       it != end;) {
+    llvm::Instruction &Inst = *it++;
+    if (auto *intToPtr = dyn_cast<llvm::IntToPtrInst>(&Inst)) {
+      tryReplaceRoundTrip(intToPtr);
+    }
+  }
+}
 
 void doit(llvm::Module *srcModule, llvm::Function *srcFn, Verifier &verifier,
           llvm::TargetLibraryInfoWrapperPass &TLI) {
@@ -160,6 +218,11 @@ void doit(llvm::Module *srcModule, llvm::Function *srcFn, Verifier &verifier,
     lifter::addDebugInfo(srcFn, lineMap);
     AsmBuffer = lifter::generateAsm(*srcModule, Targ, DefaultTT,
                                     DefaultCPU.c_str(), DefaultFeatures);
+    if (!AsmBuffer) {
+      *out << "\nERROR: BPF backend reported an error lowering this "
+              "function (see stderr); no code to validate\n\n";
+      exit(-1);
+    }
   } else {
     AsmBuffer = ExitOnErr(
         llvm::errorOrToExpected(llvm::MemoryBuffer::getFile(opt_asm_input)));
@@ -190,6 +253,9 @@ void doit(llvm::Module *srcModule, llvm::Function *srcFn, Verifier &verifier,
     of << lifter::moduleToString(F2->getParent());
     of.close();
   }
+
+  if (run_replace_ptrtoint)
+    tryReplacePtrtoInt(F2);
 
   if (!opt_skip_verification)
     verifier.compareFunctions(*F1, *F2);
