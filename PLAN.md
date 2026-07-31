@@ -73,18 +73,25 @@ K2's corpus, bpf_conformance as executable spec)
 
 ## Next up (in order)
 
-1. **Helpers by number** — synthesize per-ID external declarations in
-   both modules, route through the existing uninterpreted-call path.
-   Unlocks 334 selftest functions AND the last 3 conformance tests
-   (312/312 = production-runtime parity).
+1. ~~**Helpers by number**~~ ✅ (2026-07-31): per-ID uninterpreted
+   `@__bpf_helper_N` in both modules (semantic-copy rewrite + lifter
+   JAL-immediate path; DECISIONS.md). Selftest helper bucket was 304
+   (not 334 — old count matched file paths): 110 now verified, 148
+   revealed as maps-blocked, 6 INCORRECT all in the known
+   escaping-stack class (now 11 total). Conformance 309 → 310/312;
+   the last 2 are bpf2bpf local calls (now detected from raw src_reg
+   and rejected honestly), not helpers — 312/312 needs bpf2bpf, queued
+   below.
 2. **`barrier_var` passthrough** — empty template with tied `"+r"`
    operands is an identity function; largest recoverable slice of the
    inline-asm bucket.
 3. **Maps design** (checkpoint-worthy discussion first) — `.maps`
-   globals are 14% of selftest functions; K2-style distinguished
+   globals are 14% of selftest functions **+ 148 helper-bucket
+   functions now blocked only on this**; K2-style distinguished
    blocks per the design doc.
 4. Cilium corpus; `-cpu v4` sweep (converts the backend-error bucket);
-   per-object stack blocks (retires the last false-alarm class).
+   per-object stack blocks (retires the last false-alarm class, now
+   11 functions); bpf2bpf local calls (last 2 conformance tests).
 - **M5 — fuzzing** (later): Csmith integer subset, once the feature filter
   passes most generated programs.
 

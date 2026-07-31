@@ -12,10 +12,15 @@ build/bpf_conformance/bin/bpf_conformance_runner \
   --cpu_version v4
 ```
 
-## Result: 309 / 312 (2026-07-30)
+## Result: 310 / 312 (2026-07-31; was 309 on 2026-07-30)
 
-The 3 failures are the bpf2bpf local-call tests (`call_local`,
-`call_unwind_fail`, `rfc9669_call_local`) — a documented v0 exclusion.
+The 2 failures are the bpf2bpf local-call tests (`call_local`,
+`rfc9669_call_local`) — a documented v0 exclusion, now detected from
+the raw `src_reg` field of the call encoding (the MCInst drops it) and
+rejected with an explicit message. `call_unwind_fail` passes since
+helper-calls-by-number landed (2026-07-31): helpers lift to the
+generic `i64 (i64 x 5)` ABI as `@__bpf_helper_N` and the plugin
+resolves the "unwind" test helper (ID 5) at JIT time.
 For comparison, production runtimes report ~all-pass on this corpus
 (llvmbpf "313/313" at an earlier corpus version); uBPF/rbpf are the
 other measured implementations.
@@ -47,6 +52,5 @@ other measured implementations.
   through the caller-controlled stream.
 - Not yet wired into CI (the runner needs boost in the devcontainer
   image); local run documented above.
-- Next increments: conformance helpers by number (would cover the
-  remaining `call` tests and enable uBPF-parity), bpf2bpf local calls,
-  and cross-checking against uBPF/rbpf plugins as additional oracles.
+- Next increments: bpf2bpf local calls (the last 2 tests), and
+  cross-checking against uBPF/rbpf plugins as additional oracles.

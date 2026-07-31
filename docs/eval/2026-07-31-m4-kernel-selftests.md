@@ -15,7 +15,7 @@ clean-Linux-headers cross-check).
 | unsupported:inline-asm | 1735 | 40.2% | the measured cap (see below) |
 | unsupported:global-lookup | 604 | 14.0% | maps (`.maps` globals) — v0 exclusion |
 | **verified** | **601** | **13.9%** | median 0.03s, p90 0.05s, max 11.8s |
-| other | 571 | 13.2% | 334 helper-calls-by-number, 109 calling-conv, rest misc |
+| other | 571 | 13.2% | 304 helper-calls-by-number (feature landed, see below), 109 calling-conv, rest misc |
 | unsupported:src-ir | 322 | 7.5% | Alive2-side rejections (atomics etc.) |
 | compile-error | 286 | 6.6% | mostly macOS-shim artifacts; container run pending |
 | failed-to-prove | 46 | 1.1% | |
@@ -36,8 +36,20 @@ clean-Linux-headers cross-check).
    globals fails lifter global lookup. The K2-style map modeling from
    the design doc is the fix; until then this bucket is the honest
    price of the v0 cut.
-3. **Helper calls by number (334)** — same gap as the conformance
-   harness's 3 remaining tests; one feature closes both.
+3. **Helper calls by number (304; the earlier "334" over-counted by
+   matching file paths)** — same gap as the conformance harness's
+   `call 5` test. **Feature landed 2026-07-31** (per-ID uninterpreted
+   `@__bpf_helper_N`, see DECISIONS.md). Re-running exactly those 304
+   functions: **110 verified**, 148 move to the maps bucket
+   (`unsupported:global-lookup` — they also use `.maps` globals), 22
+   varargs, 17 failed-to-prove, 1 timeout, and 6 INCORRECT. All 6
+   (5 × `iters_testmod.ll` `iter_next_*`, 1 ×
+   `verifier_iterating_callbacks.ll` `unsafe_on_2nd_iter`) are the
+   already-documented escaping-stack-object class below — the
+   counterexamples show a callee-returned pointer modeled as
+   stack-derived (or a stack pointer smuggled through a loop-context
+   struct), not a defect in the helper modeling. Known-class INCORRECT
+   total: 5 → 11.
 4. **kfunc-call INCORRECT cluster: diagnosed and burned down 20 → 5.**
    Root cause is not kfuncs at all: **two distinct stack objects
    escaping to callees** cannot be matched by Alive2 against the
